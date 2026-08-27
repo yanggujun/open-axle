@@ -1,0 +1,48 @@
+{
+    "skill_configs": [
+        {
+            "skill": "access_db",
+            "config_items": [
+                {
+                    "name": "database name",
+                    "value": {
+                        "port": "50000",
+                        "address": "db address",
+                        "user_name": "user",
+                        "pass": "password",
+                        "type": "mysql",
+                        "driver": "db_driver"
+                      }
+                },
+                {
+                    "name": "database name2",
+                    "value": {
+                        "port": "40000",
+                        "address": "db address",
+                        "user_name": "user",
+                        "pass": "password",
+                        "type": "mysql",
+                        "driver": "db_driver"
+                      }
+                }
+            ]
+        },
+        {
+            "skill": "curl",
+            "config_items": [
+                {
+                    "name": "domain name",
+                    "value": {
+                            "auth_string": "bearer xxxx"
+                    }
+                },
+                {
+                    "name": "domain name 2",
+                    "value": {
+                        "auth_string": "bearer xxxxxxx"
+                    }
+                }
+            ]
+        }
+    ]
+}
