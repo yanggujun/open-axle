@@ -244,6 +244,9 @@ def find_files_from_payload(
             if len(matched_files) >= data["max_results"]:
                 break
 
+    if not matched_files:
+        return _wrap_response("No file is found", sequential=False)
+
     files = ""
     for fp in matched_files:
         files += fp + "\n"

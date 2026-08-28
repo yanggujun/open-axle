@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "open-axle"
+version = "0.1.0"
+description = "Open Axle - an AI agent framework with skills support and an interactive CLI"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = ["ai", "agent", "skills", "llm", "cli"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+]
+dependencies = [
+    "openai>=1.0.0",
+    "python-dotenv>=1.0.0",
+    "anthropic",
+    "requests",
+    "paramiko",
+]
+
+[project.scripts]
+open-axle = "axle:main"
+
+[tool.setuptools]
+py-modules = ["axle", "axle_agent", "ai_agent", "axle_executor", "axle_logger", "skills"]
+include-package-data = true

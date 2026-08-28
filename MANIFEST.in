@@ -1,0 +1,6 @@
+recursive-include skills *.py *.md
+include *.py
+include .env.sample
+include .axle.sample
+include requirements.txt
+include README.md

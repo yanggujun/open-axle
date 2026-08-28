@@ -56,7 +56,7 @@ The LLM's response MUST be a pure JSON string with no code blocks.
   "action": "find_file",
   "thinking": "<ai-thinking-trace>",
   "sequential": {
-    "prompt": ""
+    "prompt": "The files are provided below.<for followup tasks>"
   },
   "properties": [
     { "name": "pattern",       "value": "<filename-or-glob>" },
