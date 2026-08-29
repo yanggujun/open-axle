@@ -129,7 +129,6 @@ class AxleAgent:
                 needPrint = result.print
                 if needPrint and needPrint == True:
                     print(f"[axle] {result.content}")
-                    self.logger.log(f"result:\n{result.content}")
                 
                 followup = result.sequential
                 if followup:
@@ -139,15 +138,17 @@ class AxleAgent:
                     print("==" * 30)
                     print(f"[axle] prompt: {nextPrompt}")
                     print("==" * 30)
+                else:
+                    self.logger.log(f"result:\n{result.content}")
             else:
                 if result:
                     self.logger.log(f"execution result: {result}")
                 else:
                     self.logger.log("empty result")
                 followup = False
+            # Update conversation history
+            self.conversation_history.append({"role": "user", "content": user_input})
+            self.conversation_history.append({"role": "assistant", "content": response})
 
-        # Update conversation history
-        self.conversation_history.append({"role": "user", "content": user_input})
-        self.conversation_history.append({"role": "assistant", "content": response})
         user_input = ""
         followup = True
