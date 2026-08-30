@@ -202,14 +202,21 @@ class SkillsAIAgent:
         messages.append({"role": "user", "content": user_message})
 
         # Make the API call
-        try:
-            if self.responses:
-                response = self._call_llm_responses_api(user_message)
-            else:    
-                response = self._call_llm(messages)
-            return response
-        except Exception as e:
-            return f"Error communicating with LLM: {str(e)}"
+        retry = 1
+        while True:
+            if retry > 1:
+                self.logger.log("Retrying...")
+            try:
+                if self.responses:
+                    response = self._call_llm_responses_api(user_message)
+                else:    
+                    response = self._call_llm(messages)
+                return response
+            except Exception as e:
+                self.logger.log(f"Communication error: {str(e)}")
+                retry += 1
+                if retry > 3:
+                    return f"Error communicating with LLM: {str(e)}"
 
     def _call_llm(self, messages: List[Dict[str, str]]) -> str:
         url = self.base_url
