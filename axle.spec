@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['/home/alan/workspace/open-axle/axle.py'],
+    ['./axle.py'],
     pathex=[],
     binaries=[],
     datas=[],

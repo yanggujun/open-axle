@@ -20,7 +20,12 @@ def main():
         is_responses = True
     
     if not api_key:
-        raise ValueError("LLM_API_KEY not found in environment variables")
+        raise ValueError("API_KEY not found in environment variables")
+    if not model_name:
+        raise ValueError("MODEL_NAME not found in environment variables")
+    if not base_url:
+        raise ValueError("BASE_URL not found in environment variables")
+
     axle_agent = AxleAgent(base_url = base_url, 
                            api_key = api_key, 
                            model_name = model_name, 

@@ -1,11 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 cd "$(dirname "$0")"
-rm -rf dist build
+
+if [ -d dist ]; then
+    rm -rf dist
+fi
+
+if [ -d build ]; then
+    rm -rf build
+fi
 
 MAJOR=0
 MINOR=1
-BUILD_DATE="2026-08-29"
+BUILD_DATE="2026-07-17"
 DAYS=$(printf "%04d" $(( ( $(date +%s) - $(date -d "$BUILD_DATE" +%s) ) / 86400 )))
 TIMESTAMP=$(date +%s)
 LAST4=$(printf "%04d" $((TIMESTAMP % 10000)))

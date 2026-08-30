@@ -1,6 +1,12 @@
 # Open Axle
 
-Open Axle is a simple but effective CLI AI agent.
+Open Axle is a simple but effective CLI AI agent for software developers. 
+
+If you are an expert in other domain, you can also simply replace and add skills according to your requirement.
+
+The built-in skills are all used to operate on file system and network.
+
+The agent is well tested with deepseek-v4-flash.
 
 ## Requirements
 
@@ -9,14 +15,13 @@ Open Axle is a simple but effective CLI AI agent.
 
 ## Installation
 
+Checkout the code into local
+
 ```bash
+python -m venv .venv
+source .venv/bin/activate
 pip install -r requirements.txt
-```
-
-Or install as a package:
-
-```bash
-pip install .
+python ./axle.py
 ```
 
 ## Configuration
@@ -31,21 +36,7 @@ Copy `.env.sample` to `.env` and set the required environment variables:
 
 Copy `.axle.sample` to `.axle` to configure skill-specific settings (database connections, API auth, etc.).
 
-## Usage
-
-Run the CLI:
-
-```bash
-open-axle
-```
-
-Or run directly:
-
-```bash
-python axle.py
-```
-
-Inside the interactive loop:
+## Commands
 
 - Type your message to chat with the agent
 - `skills` — list all loaded skills
@@ -53,6 +44,66 @@ Inside the interactive loop:
 - `reload` — reload skills and reset conversation
 - `clear` — clear conversation history
 - `quit`, `exit`, or `q` — exit the agent
+
+### Sample Prompt
+
+ - Find method "aComplexMethod", explain the usage of parameter "abc".
+ - SSH to "myRemoteServer", in folder $HOME/Downloads, find file *abc.tar.gz, and extract the content into folder abc
+ - From database "myDevDB", get the first 10 records of table "PERSON" order by ID descending, and save the content into person.csv in csv format
+ - CURL to API "https://mydomain.com/rest/some/api", analyse the result to find some data.
+
+Configuration in .axle file in the same directory
+
+``` JSON
+
+{
+    "skill_configs": [
+        {
+            "skill": "access_db",
+            "config_items": [
+                {
+                    "name": "myDevDB",
+                    "value": {
+                        "port": "50000",
+                        "address": "db address",
+                        "user_name": "user",
+                        "pass": "password",
+                        "type": "mysql",
+                        "driver": "db_driver"
+                      }
+                }
+            ]
+        },
+        {
+            "skill": "curl",
+            "config_items": [
+                {
+                    "name": "mydomain",
+                    "value": {
+                            "auth_string": "bearer xxxx"
+                    }
+                }
+            ]
+        },
+        {
+            "skill": "ssh",
+            "config_items": [
+                {
+                    "name": "devserver",
+                    "value": {
+                        "host": "host address",
+                        "port": "22",
+                        "user_name": "login user",
+                        "auth_type": "key",
+                        "key_file": "your ssh connection key file"
+                    }
+                }
+            ]
+        }
+    ]
+}
+```
+
 
 ## Skills Folder Structure
 

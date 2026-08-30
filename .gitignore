@@ -7,3 +7,4 @@
 /.axle
 /open_axle.egg-info
 /build
+**/*.swp
