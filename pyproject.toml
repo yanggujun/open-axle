@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "open-axle"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Open Axle - an AI agent framework with skills support and an interactive CLI"
 readme = "README.md"
 requires-python = ">=3.8"
@@ -29,5 +29,8 @@ dependencies = [
 open-axle = "axle:main"
 
 [tool.setuptools]
-py-modules = ["axle", "axle_agent", "ai_agent", "axle_executor", "axle_logger", "skills"]
+py-modules = ["_version", "axle", "axle_agent", "ai_agent", "axle_executor", "axle_logger", "skills"]
 include-package-data = true
+
+[tool.setuptools.dynamic]
+version = {attr = "_version.__version__"}

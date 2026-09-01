@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from axle_agent import AxleAgent
+from _version import __version__
 
 
 def main():

@@ -5,7 +5,6 @@ import os
 from ai_agent import SkillsAIAgent
 from axle_executor import ExecutionResponse, discover_axle_executors, execute
 from axle_logger import AxleLogger
-from skills import SkillManager
 
 
 class AxleAgent:
@@ -32,19 +31,12 @@ class AxleAgent:
             logger=self.logger
         )
         
-        
-        # Create a skill manager for executable skills
-        self.skill_manager = SkillManager()
-
         self.logger.log(f"starting {model_name}")
 
 
         # Display loaded skills
         print("\n" + "="*60)
         print(self.agent.get_skills_summary())
-        print(f"\nExecutable skills registered: {len(self.skill_manager.skills)}")
-        for name in self.skill_manager.skills:
-            print(f"  - {name}")
         print("="*60 + "\n")
         
         # Interactive chat loop

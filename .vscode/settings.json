@@ -1,0 +1,34 @@
+{
+  "files.exclude": {
+    "**/.git": true,
+    "**/.svn": true,
+    "**/.hg": true,
+    "**/CVS": true,
+    "**/.DS_Store": true, 
+    "**/build": true,
+    "**/tomcat-sfs": true,
+    "**/.classpath": true,
+    "**/.project": true,
+    "**/.settings": true,
+    "**/.factorypath": true,
+    "**/target": true,
+    "*.swp": true,
+    "*.orig": true
+  },
+  "workbench.colorCustomizations": {
+    "tab.activeBackground": "#1d3681",
+    "activityBar.background": "#282c34",
+    "sideBar.background": "#282c34",
+    "tab.activeBorder": "#1d3681"
+  },
+  "editor.tabSize": 2,
+  "editor.fontWeight": "400",
+  "editor.fontSize": 14,
+  "files.autoSave": "afterDelay",
+  "files.autoSaveDelay": 20000,
+  "vim.incsearch": true,
+  "vim.hlsearch": true,
+  "vim.ignorecase": true,
+  "vim.searchHighlightColor": "#0640f0",
+  "editor.renderWhitespace": "all"
+}
