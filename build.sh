@@ -16,7 +16,7 @@ BUILD_DATE="2026-07-17"
 DAYS=$(printf "%04d" $(( ( $(date +%s) - $(date -d "$BUILD_DATE" +%s) ) / 86400 )))
 TIMESTAMP=$(date +%s)
 LAST4=$(printf "%04d" $((TIMESTAMP % 10000)))
-VERSION="${MAJOR}.${MINOR}.${DAYS}.${LAST4}"
+VERSION=$(python _version.py)
 
 echo "==> Building Open Axle v${VERSION} with PyInstaller..."
 pyinstaller --noconfirm --clean --distpath dist/output --workpath build axle.spec

@@ -13,7 +13,9 @@ def _get_build_version():
     now_epoch = int(time.time())
     days = (now_epoch - build_date_epoch) // 86400
     last4 = now_epoch % 10000
-    return f"{MAJOR}.{MINOR}.{days:04d}.{last4:04d}"
+    return f"{MAJOR}.{MINOR}.{days}.{last4:04d}"
 
 
 __version__ = _get_build_version()
+
+print(__version__)

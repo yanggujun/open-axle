@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import posixpath
 from typing import Any, Dict, Optional, Union
 
 from axle_executor import AxleExecutor, ExecutionResponse, extract_json, get_skill_config, getSequential
@@ -156,7 +157,7 @@ def _create_sftp_client(host, port, user, password, auth_type, key_file, timeout
 
 
 def _ensure_remote_dir(sftp, remote_path):
-    remote_dir = os.path.dirname(remote_path)
+    remote_dir = posixpath.dirname(remote_path)
     if not remote_dir:
         return
     try:

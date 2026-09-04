@@ -29,7 +29,7 @@ dependencies = [
 open-axle = "axle:main"
 
 [tool.setuptools]
-py-modules = ["_version", "axle", "axle_agent", "ai_agent", "axle_executor", "axle_logger", "skills"]
+py-modules = ["_version", "axle", "axle_agent", "ai_agent", "axle_executor", "axle_logger"]
 include-package-data = true
 
 [tool.setuptools.dynamic]

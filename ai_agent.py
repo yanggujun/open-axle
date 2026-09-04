@@ -100,7 +100,7 @@ class SkillsAIAgent:
 
         # Base system prompt
         parts.append(
-            "You are an intelligent AI assistant equipped with specialized skills. "
+            "You are an intelligent AI assistant equipped with specialized skills, and always generate formatted output in JSON. "
             "You should use these skills when appropriate to help the user effectively.\n"
             "\n"
             "## Your Capabilities\n"

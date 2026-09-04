@@ -1,5 +1,5 @@
 ## Output Requirement
-All the output of this conversation should follow the below format and no code fence should be applied. For responses API, the schema is also advertised to tools.
+All the output follow the below format and no code fence should be applied. For responses API, the schema is also advertised to tools.
 > {
 >   "action": "action_name",
 >   "thinking": "the think trace of LLM",

@@ -226,7 +226,7 @@ def format_read_result(columns, rows, max_rows) -> str:
         str_row = [str(val) if val is not None else "NULL" for val in row]
         result += sep.join(str_row) + "\n"
     
-    result += f"\ntotal rows returned: {min(index, len(rows))}"
+    result += f"\ntotal rows returned: {min(index - 1, len(rows))}"
     if len(rows) > max_rows:
         result += f" (truncated, total: {len(rows)})"
     return result
