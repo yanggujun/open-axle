@@ -7,7 +7,7 @@ import os
 import re
 from typing import Any, Dict, List, Optional, Tuple, Union
 
-from axle_executor import AxleExecutor, ExecutionResponse, extract_json, getSequential  # noqa: E402
+from executor import AxleExecutor, ExecutionResponse, extract_json, getSequential  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Safety

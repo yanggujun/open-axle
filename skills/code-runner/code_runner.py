@@ -15,7 +15,7 @@ import subprocess
 import sys
 from typing import Any, Dict, Optional, Union
 
-from axle_executor import AxleExecutor, ExecutionResponse, extract_json, getSequential
+from executor import AxleExecutor, ExecutionResponse, extract_json, getSequential
 
 # ---------------------------------------------------------------------------
 # Danger detection

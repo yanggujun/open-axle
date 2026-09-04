@@ -8,13 +8,13 @@ import os
 import glob
 import platform
 from typing import List, Dict, Optional, Any
-from axle_logger import AxleLogger
+from logger import AxleLogger
 from openai import OpenAI
 
 import requests
 
 
-class SkillsAIAgent:
+class Model:
     """
     An AI agent that loads skill definitions from markdown files
     and uses them as system context for LLM-powered conversations.

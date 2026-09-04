@@ -4,7 +4,7 @@ import json
 import importlib
 from typing import Any, Dict, Optional, Union
 
-from axle_executor import AxleExecutor, ExecutionResponse, extract_json, get_skill_config, getSequential
+from executor import AxleExecutor, ExecutionResponse, extract_json, get_skill_config, getSequential
 
 # ---------------------------------------------------------------------------
 # Safety - Default: read-only queries

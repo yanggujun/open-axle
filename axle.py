@@ -1,7 +1,6 @@
 import os
 from dotenv import load_dotenv
-from axle_agent import AxleAgent
-from _version import __version__
+from agent import AxleAgent
 
 
 def main():
@@ -27,7 +26,7 @@ def main():
     if not base_url:
         raise ValueError("BASE_URL not found in environment variables")
 
-    axle_agent = AxleAgent(base_url = base_url, 
+    agent = AxleAgent(base_url = base_url, 
                            api_key = api_key, 
                            model_name = model_name, 
                            skills_folder = skills_folder, 
@@ -38,10 +37,31 @@ def main():
     while True:
         user_input = input("You: ").strip()
         
-        if user_input.lower() in ['quit', 'exit', 'q']:
-            print("Goodbye!")
-            break
-        axle_agent.talk(user_input)
+        if user_input:
+            if user_input.lower() in ['quit', 'exit', 'q']:
+                print("Goodbye!")
+                break
+            elif user_input.lower() == 'skills':
+                print("\n" + agent.get_skills())
+                print()
+            elif user_input.lower().startswith('set '):
+                splits = user_input[4:].strip().split(maxsplit=1)
+                if splits:
+                    rsv_cmd = splits[0]
+                    cmd_value = splits[1] if len(splits) > 1 else ""
+                    if rsv_cmd.lower() == 'pwd':
+                        if not os.path.isabs(cmd_value):
+                            cmd_value = os.path.join(os.getcwd(), cmd_value)
+                        if not os.path.isdir(cmd_value):
+                            print("not a valid directory")
+                        else:
+                            agent.cd(cmd_value)
+            elif user_input.lower() == 'reload':
+                agent.reload()
+            elif user_input.lower() == 'clear':
+                agent.clear()
+            else:
+                agent.talk(user_input)
         
 if __name__ == "__main__":
     main()

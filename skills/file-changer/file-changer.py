@@ -22,7 +22,7 @@ import re
 import shutil
 from typing import Any, Dict, Optional, Union
 
-from axle_executor import AxleExecutor, ExecutionResponse, extract_json, getSequential  # noqa: E402
+from executor import AxleExecutor, ExecutionResponse, extract_json, getSequential  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Safety

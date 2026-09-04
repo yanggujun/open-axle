@@ -27,7 +27,7 @@ mkdir -p dist/output
 cp -R skills dist/output/skills
 find dist/output/skills -type d -name __pycache__ -prune -exec rm -rf {} +
 
-echo "==> Packaging dist/output into dist/open-axle_${VERSION}.tar.gz..."
-tar -czf "dist/open-axle_${VERSION}.tar.gz" -C dist/output .
+echo "==> Packaging dist/output into dist/open-axle_${VERSION}-linux-amd64.tar.gz..."
+tar -czf "dist/open-axle_${VERSION}-linux-amd64.tar.gz" -C dist/output .
 
 echo "Build complete: dist/open-axle_${VERSION}.tar.gz"
