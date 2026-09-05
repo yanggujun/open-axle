@@ -1,14 +1,32 @@
 {
-  "name": "axle-agent-ui",
+  "name": "axle-gui",
   "version": "1.0.0",
-  "description": "Web UI to interact with the AxleAgent HTTP server endpoints",
+  "description": "Electron GUI for AxleAgentServer",
+  "main": "main.js",
   "scripts": {
-    "build": "tsc",
-    "start": "tsc && npx serve .",
-    "watch": "tsc --watch"
+    "start": "electron .",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
   },
-  "dependencies": {
-    "typescript": "^5.0.0",
-    "serve": "^14.0.0"
+  "devDependencies": {
+    "electron": "^44.2.0",
+    "electron-builder": "^26.15.3"
+  },
+  "build": {
+    "appId": "com.axle.gui",
+    "productName": "AxleGUI",
+    "directories": {
+      "output": "dist"
+    },
+    "files": ["main.js", "renderer.js", "index.html", "styles.css", "package.json"],
+    "win": {
+      "target": "nsis"
+    },
+    "mac": {
+      "target": "dmg"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
   }
 }

@@ -35,12 +35,14 @@ class AxleAgentServer:
         if not base_url:
             raise ValueError("BASE_URL not found in environment variables")
 
+        base_dir = os.getcwd()
         agent = AxleAgent(
             base_url=base_url,
             api_key=api_key,
             model_name=model_name,
             skills_folder=skills_folder,
-            responses=is_responses
+            responses=is_responses,
+            base_dir = base_dir
         )
         return agent
 
