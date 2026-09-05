@@ -6,7 +6,7 @@ from dotenv import load_dotenv
 
 class AxleLogger:
 
-    def __init__(self):
+    def __init__(self, base_dir: str):
         load_dotenv()
         path = os.getenv("LOG_PATH")
         file_name = os.getenv("LOG_FILE_NAME")
@@ -15,9 +15,9 @@ class AxleLogger:
 
         full_path = ""
         if not path:
-            full_path = os.path.join(os.getcwd(), ".logs");
+            full_path = os.path.join(base_dir, ".logs");
         else:
-            full_path = os.path.join(os.getcwd(), path)
+            full_path = os.path.join(base_dir, path)
 
         fname = ""
         if not file_name:

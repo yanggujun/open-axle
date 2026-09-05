@@ -14,7 +14,7 @@ import re
 import fnmatch
 from typing import Any, Dict, List, Optional, Union
 
-from executor import AxleExecutor, ExecutionResponse, extract_json, getSequential  # noqa: E402
+from core.executor import AxleExecutor, ExecutionResponse, extract_json, getSequential  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Safety

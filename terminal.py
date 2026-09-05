@@ -14,7 +14,7 @@ import sys
 import tkinter as tk
 from tkinter import scrolledtext
 
-from agent import AxleAgent
+from core.agent import AxleAgent
 
 
 class TerminalGUI:

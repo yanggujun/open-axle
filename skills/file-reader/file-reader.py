@@ -13,7 +13,7 @@ import os
 import re
 from typing import Any, Dict, Optional, Union
 
-from executor import AxleExecutor, ExecutionResponse, extract_json, getSequential  # noqa: E402
+from core.executor import AxleExecutor, ExecutionResponse, extract_json, getSequential  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Safety
@@ -159,7 +159,7 @@ def read_file_from_payload(
 
     # Existence & type checks.
     if not os.path.exists(full_path):
-        return f"File not found: {full_path}"
+        return ExecutionResponse(content = f"FILE NOT FOUND: {full_path}, PLEASE FIND THE FILE FIRST", prompt = data["prompt"], sequential = True, print = True)
     if not os.path.isfile(full_path):
         return f"Path is not a regular file: {full_path}"
 

@@ -8,3 +8,4 @@
 /open_axle.egg-info
 /build
 **/*.swp
+**/node_modules/

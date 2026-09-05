@@ -2,9 +2,9 @@
 
 import os
 
-from model import Model
-from executor import ExecutionResponse, discover_axle_executors, execute
-from logger import AxleLogger
+from core.model import Model
+from core.executor import ExecutionResponse, discover_axle_executors, execute
+from core.logger import AxleLogger
 
 
 class AxleAgent:
@@ -14,12 +14,13 @@ class AxleAgent:
         api_key: str,
         model_name: str,
         skills_folder: str,
-        responses: bool
+        responses: bool,
+        base_dir: str
     ):
         self.api_key = api_key
         self.model_name = model_name
         self.skills_folder = skills_folder
-        self.logger = AxleLogger()
+        self.logger = AxleLogger(base_dir)
         self.model = Model(
             api_key=api_key,
             base_url=base_url,
@@ -30,21 +31,9 @@ class AxleAgent:
         )
         
         self.logger.log(f"starting {model_name}")
-
-
-        # Display loaded skills
-        print("\n" + "="*60)
-        print(self.model.get_skills_summary())
-        print("="*60 + "\n")
-        
-        # Interactive chat loop
-        print("AI Agent ready! Type 'quit' to exit, 'skills' to see skills list.")
-        print("Type 'exec <skill_name> <args>' to execute a skill directly.\n")
-
         self.executors = discover_axle_executors()
-        
         self.conversation_history = []
-        self.base_dir = os.getcwd()
+        self.base_dir = base_dir
 
     def cd(self, dir: str):
         self.base_dir = dir

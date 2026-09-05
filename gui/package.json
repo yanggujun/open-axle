@@ -1,0 +1,14 @@
+{
+  "name": "axle-agent-ui",
+  "version": "1.0.0",
+  "description": "Web UI to interact with the AxleAgent HTTP server endpoints",
+  "scripts": {
+    "build": "tsc",
+    "start": "tsc && npx serve .",
+    "watch": "tsc --watch"
+  },
+  "dependencies": {
+    "typescript": "^5.0.0",
+    "serve": "^14.0.0"
+  }
+}

@@ -16,7 +16,7 @@ import shlex
 import sys
 from typing import Any, Dict, Optional, Union
 
-from executor import AxleExecutor, ExecutionResponse, extract_json, getSequential
+from core.executor import AxleExecutor, ExecutionResponse, extract_json, getSequential
 
 # ---------------------------------------------------------------------------
 # Danger detection

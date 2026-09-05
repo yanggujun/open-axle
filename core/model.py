@@ -8,7 +8,7 @@ import os
 import glob
 import platform
 from typing import List, Dict, Optional, Any
-from logger import AxleLogger
+from core.logger import AxleLogger
 from openai import OpenAI
 
 import requests

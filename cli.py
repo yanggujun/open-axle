@@ -1,6 +1,6 @@
 import os
 from dotenv import load_dotenv
-from agent import AxleAgent
+from core.agent import AxleAgent
 
 
 def main():
@@ -26,12 +26,23 @@ def main():
     if not base_url:
         raise ValueError("BASE_URL not found in environment variables")
 
+    base_dir = os.getcwd()
     agent = AxleAgent(base_url = base_url, 
                            api_key = api_key, 
                            model_name = model_name, 
                            skills_folder = skills_folder, 
-                           responses = is_responses)
+                           responses = is_responses,
+                           base_dir = base_dir)
     
+
+    # Display loaded skills
+    print("\n" + "="*60)
+    print(agent.get_skills())
+    print("="*60 + "\n")
+    
+    # Interactive chat loop
+    print("AI Agent ready! Type 'quit' to exit, 'skills' to see skills list.")
+    print("Type 'exec <skill_name> <args>' to execute a skill directly.\n")
 
     
     while True:

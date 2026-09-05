@@ -18,7 +18,7 @@ import ssl
 from typing import Any, Dict, Optional, Union
 from urllib.parse import urlparse
 
-from executor import AxleExecutor, ExecutionResponse, extract_json, getSequential, get_skill_config
+from core.executor import AxleExecutor, ExecutionResponse, extract_json, getSequential, get_skill_config
 
 # ---------------------------------------------------------------------------
 # Safety - Blocked hosts

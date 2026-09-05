@@ -2,7 +2,7 @@
 
 
 a = Analysis(
-    ['./axle.py'],
+    ['./cli.py'],
     pathex=[],
     binaries=[],
     datas=[],

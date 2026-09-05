@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AxleAgent UI</title>
+    <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+    <div class="container">
+        <h1>AxleAgent Control Panel</h1>
+        <p>Interact with the AxleAgent HTTP server (host: 127.0.0.1, port: 8080)</p>
+
+        <section class="endpoint-group">
+            <h2>GET Endpoints</h2>
+            <button id="btn-skills">GET /skills</button>
+            <button id="btn-reload">GET /reload</button>
+            <button id="btn-clear">GET /clear</button>
+        </section>
+
+        <section class="endpoint-group">
+            <h2>POST Endpoints</h2>
+            <div class="input-group">
+                <label for="talk-input">Text for /talk:</label>
+                <textarea id="talk-input" rows="3" placeholder="Enter text to send to the agent..."></textarea>
+                <button id="btn-talk">POST /talk</button>
+            </div>
+            <div class="input-group">
+                <label for="cd-input">Path for /cd:</label>
+                <input type="text" id="cd-input" placeholder="e.g. /path/to/directory">
+                <button id="btn-cd">POST /cd</button>
+            </div>
+        </section>
+
+        <section class="result-area">
+            <h2>Response</h2>
+            <pre id="result">// Response will appear here</pre>
+        </section>
+    </div>
+
+    <script type="module" src="dist/index.js"></script>
+</body>
+</html>

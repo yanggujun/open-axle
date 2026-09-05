@@ -5,7 +5,7 @@ import os
 import posixpath
 from typing import Any, Dict, Optional, Union
 
-from executor import AxleExecutor, ExecutionResponse, extract_json, get_skill_config, getSequential
+from core.executor import AxleExecutor, ExecutionResponse, extract_json, get_skill_config, getSequential
 
 
 DEFAULT_TIMEOUT = 30
