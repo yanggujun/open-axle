@@ -2,7 +2,7 @@
 **/__pycache__/
 /__pycache__/*
 /localTest
-/dist
+**/dist
 /.logs
 /.axle
 /open_axle.egg-info
