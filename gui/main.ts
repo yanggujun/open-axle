@@ -1,7 +1,7 @@
-const { app, BrowserWindow } = require('electron');
-const path = require('path');
+import { app, BrowserWindow } from 'electron';
+import * as path from 'path';
 
-function createWindow() {
+function createWindow(): void {
   const win = new BrowserWindow({
     width: 900,
     height: 700,

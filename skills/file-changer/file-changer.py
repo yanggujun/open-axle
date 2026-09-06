@@ -390,5 +390,4 @@ __all__ = [
     version="1.0.0",
 )
 def change_file(json_payload: str, base_dir: str = ""):
-    print(f"file changer: changing file with payload...: {json_payload}")
     return skill_file_changer_execute(json_payload, base_dir)

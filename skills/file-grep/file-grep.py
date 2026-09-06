@@ -367,5 +367,4 @@ __all__ = [
     version="1.0.0",
 )
 def grep_file(json_payload: str, base_dir: str = "") -> Dict[str, Any]:
-    print(f"file grep: running grep with payload...")
     return skill_file_grep_execute(json_payload, base_dir)

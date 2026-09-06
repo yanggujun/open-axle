@@ -17,13 +17,28 @@ The agent is well tested with deepseek-v4-flash.
 
 Checkout the code into local
 
+### Start CLI
 ```bash
 python -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
-python ./axle.py
+python ./cli.py
 ```
 
+### Start GUI
+#### Start Backend Server First
+```bash
+python -m venv .venv
+python -m venv .venv
+source .venv/bin/activate
+pip install -r requirements.txt
+python ./server.py
+```
+#### Start GUI
+```bash
+npm install
+npm start
+```
 ## Configuration
 
 Copy `.env.sample` to `.env` and set the required environment variables:

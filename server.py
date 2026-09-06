@@ -74,37 +74,34 @@ class AxleAgentServer:
 
     def handle_talk(self, text):
         try:
-            return self.agent.talk(text)
+            self.agent.talk(text)
         except Exception as e:
-            return {"error": str(e)}
+            self.conduit.send({"error": str(e)})
 
     def handle_skills(self):
         try:
-            return self.agent.get_skills()
+            self.agent.get_skills()
         except Exception as e:
-            return {"error": str(e)}
+            self.conduit.send({"error": str(e)})
 
     def handle_cd(self, path):
         if not os.path.isabs(path):
             path = os.path.join(os.getcwd(), path)
         if not os.path.isdir(path):
-            return "not a valid directory"
+            self.conduit.send("not a valid directory")
         self.agent.cd(path)
-        return "changed directory"
 
     def handle_reload(self):
         try:
             self.agent.reload()
-            return "reloaded"
         except Exception as e:
-            return {"error": str(e)}
+            self.conduit.send({"error": str(e)})
 
     def handle_clear(self):
         try:
             self.agent.clear()
-            return "cleared"
         except Exception as e:
-            return {"error": str(e)}
+            self.conduit.send({"error": str(e)})
 
     async def handle_client(self, websocket, path=None):
         self.clients.add(websocket)
@@ -115,27 +112,20 @@ class AxleAgentServer:
                 except json.JSONDecodeError:
                     payload = {}
                 msg_type = payload.get("type", "")
-                result = None
                 if msg_type == "talk":
                     text = payload.get("text", "")
-                    result = self.handle_talk(text)
+                    self.handle_talk(text)
                 elif msg_type == "skills":
-                    result = self.handle_skills()
+                    self.handle_skills()
                 elif msg_type == "reload":
-                    result = self.handle_reload()
+                    self.handle_reload()
                 elif msg_type == "clear":
-                    result = self.handle_clear()
+                    self.handle_clear()
                 elif msg_type == "cd":
                     path_val = payload.get("path", "")
-                    result = self.handle_cd(path_val)
+                    self.handle_cd(path_val)
                 else:
-                    result = {"error": "Unknown message type"}
-                # Send the result directly to the requesting client. Relying on
-                # the conduit broadcast would duplicate the response because the
-                # broadcast delivers to every connected client.
-                if result is not None:
-                    response_payload = json.dumps({"type": msg_type, "result": result})
-                    await websocket.send(response_payload)
+                    self.conduit.send({"error": "Unknown message type"})
         finally:
             self.clients.discard(websocket)
 

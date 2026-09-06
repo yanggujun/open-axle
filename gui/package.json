@@ -1,32 +1,17 @@
 {
-  "name": "axle-workzone",
+  "name": "axle-gui",
   "version": "1.0.0",
-  "description": "Workzone user interface for open-axle",
-  "main": "main.js",
+  "description": "Axle GUI - Electron application with TypeScript",
+  "main": "dist/main.js",
   "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
     "start": "electron .",
-    "pack": "electron-builder --dir",
-    "dist": "electron-builder"
+    "dev": "npm run build && electron ."
   },
   "devDependencies": {
-    "electron": "^44.2.0",
-    "electron-builder": "^26.15.3"
-  },
-  "build": {
-    "appId": "com.axle.gui",
-    "productName": "Axle Workzone",
-    "directories": {
-      "output": "dist"
-    },
-    "files": ["main.js", "renderer.js", "index.html", "styles.css", "package.json"],
-    "win": {
-      "target": "nsis"
-    },
-    "mac": {
-      "target": "dmg"
-    },
-    "linux": {
-      "target": "AppImage"
-    }
+    "typescript": "^5.4.0",
+    "electron": "^30.0.0",
+    "@types/node": "^20.0.0"
   }
 }
