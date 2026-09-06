@@ -4,6 +4,7 @@ import asyncio
 import websockets
 from dotenv import load_dotenv
 from core.agent import AxleAgent
+from core.conduit import QueuedConduit
 
 
 class AxleAgentServer:
@@ -12,8 +13,14 @@ class AxleAgentServer:
     def __init__(self, host="127.0.0.1", port=8080):
         self.host = host
         self.port = port
-        self.agent = self._create_agent()
         self.clients = set()
+
+        self.conduit = QueuedConduit()
+        self.conduit.subscribe(self._broadcast_message)
+        # NOTE: Do NOT start the conduit here. It must be started inside the
+        # running event loop (see start_async) so that broadcast messages and
+        # websocket sends share the same event loop.
+        self.agent = self._create_agent()
 
     def _create_agent(self):
         # Load environment variables from .env file
@@ -42,21 +49,38 @@ class AxleAgentServer:
             model_name=model_name,
             skills_folder=skills_folder,
             responses=is_responses,
-            base_dir=base_dir
+            base_dir=base_dir,
+            conduit=self.conduit
         )
         return agent
 
+    async def _broadcast_message(self, message):
+        """
+        Callback registered with QueueMessageHandler.
+        Sends the queued message to all connected websocket clients.
+        """
+        payload = json.dumps({"type": "broadcast", "message": message})
+        if not self.clients:
+            return
+        # Send to all connected clients; ignore disconnected ones.
+        disconnected = []
+        for websocket in self.clients:
+            try:
+                await websocket.send(payload)
+            except Exception:
+                disconnected.append(websocket)
+        for websocket in disconnected:
+            self.clients.discard(websocket)
+
     def handle_talk(self, text):
         try:
-            result = self.agent.talk(text)
-            return result
+            return self.agent.talk(text)
         except Exception as e:
             return {"error": str(e)}
 
     def handle_skills(self):
         try:
-            result = self.agent.get_skills()
-            return result
+            return self.agent.get_skills()
         except Exception as e:
             return {"error": str(e)}
 
@@ -66,19 +90,19 @@ class AxleAgentServer:
         if not os.path.isdir(path):
             return "not a valid directory"
         self.agent.cd(path)
-        return f"Working directory set to {path}"
+        return "changed directory"
 
     def handle_reload(self):
         try:
             self.agent.reload()
-            return "Agent reloaded"
+            return "reloaded"
         except Exception as e:
             return {"error": str(e)}
 
     def handle_clear(self):
         try:
             self.agent.clear()
-            return "Conversation cleared"
+            return "cleared"
         except Exception as e:
             return {"error": str(e)}
 
@@ -106,11 +130,19 @@ class AxleAgentServer:
                     result = self.handle_cd(path_val)
                 else:
                     result = {"error": "Unknown message type"}
-                await websocket.send(json.dumps(result))
+                # Send the result directly to the requesting client. Relying on
+                # the conduit broadcast would duplicate the response because the
+                # broadcast delivers to every connected client.
+                if result is not None:
+                    response_payload = json.dumps({"type": msg_type, "result": result})
+                    await websocket.send(response_payload)
         finally:
             self.clients.discard(websocket)
 
     async def start_async(self):
+        # Start the conduit here, inside the running event loop, so that the
+        # broadcast callback uses the same loop as the WebSocket server.
+        self.conduit.start()
         async with websockets.serve(self.handle_client, self.host, self.port):
             print(f"WebSocket server running on ws://{self.host}:{self.port}")
             await asyncio.Future()  # run forever

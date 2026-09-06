@@ -1,6 +1,7 @@
 import os
 from dotenv import load_dotenv
 from core.agent import AxleAgent
+from core.conduit import ConsoleConduit
 
 
 def main():
@@ -27,17 +28,19 @@ def main():
         raise ValueError("BASE_URL not found in environment variables")
 
     base_dir = os.getcwd()
+    conduit = ConsoleConduit()
     agent = AxleAgent(base_url = base_url, 
                            api_key = api_key, 
                            model_name = model_name, 
                            skills_folder = skills_folder, 
                            responses = is_responses,
-                           base_dir = base_dir)
+                           base_dir = base_dir, 
+                           conduit=conduit)
     
 
     # Display loaded skills
     print("\n" + "="*60)
-    print(agent.get_skills())
+    agent.get_skills()
     print("="*60 + "\n")
     
     # Interactive chat loop
@@ -53,8 +56,7 @@ def main():
                 print("Goodbye!")
                 break
             elif user_input.lower() == 'skills':
-                print("\n" + agent.get_skills())
-                print()
+                agent.get_skills()
             elif user_input.lower().startswith('set '):
                 splits = user_input[4:].strip().split(maxsplit=1)
                 if splits:

@@ -74,6 +74,13 @@ function handleResponse(data) {
     addMessage('error', data.error);
     return;
   }
+  // Broadcast messages from the queue handler (server-side enqueue) are
+  // wrapped as { type: 'broadcast', message: ... }.
+  if (data && typeof data === 'object' && data.type === 'broadcast') {
+    const text = typeof data.message === 'string' ? data.message : JSON.stringify(data.message);
+    addMessage('broadcast', text);
+    return;
+  }
   const text = typeof data === 'string' ? data : JSON.stringify(data);
   addMessage('agent', text);
 }
