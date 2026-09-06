@@ -1,19 +1,19 @@
 import os
 import json
-import threading
-from http.server import HTTPServer, BaseHTTPRequestHandler
+import asyncio
+import websockets
 from dotenv import load_dotenv
 from core.agent import AxleAgent
 
 
 class AxleAgentServer:
-    """HTTP server wrapper around AxleAgent, mimicking the CLI interface of axle.py."""
+    """WebSocket server wrapper around AxleAgent."""
 
     def __init__(self, host="127.0.0.1", port=8080):
         self.host = host
         self.port = port
         self.agent = self._create_agent()
-        self.http_server = None
+        self.clients = set()
 
     def _create_agent(self):
         # Load environment variables from .env file
@@ -42,12 +42,11 @@ class AxleAgentServer:
             model_name=model_name,
             skills_folder=skills_folder,
             responses=is_responses,
-            base_dir = base_dir
+            base_dir=base_dir
         )
         return agent
 
     def handle_talk(self, text):
-        """Calls agent.talk() and returns its output."""
         try:
             result = self.agent.talk(text)
             return result
@@ -62,7 +61,6 @@ class AxleAgentServer:
             return {"error": str(e)}
 
     def handle_cd(self, path):
-        # Same logic as axle.py: resolve absolute path and validate directory
         if not os.path.isabs(path):
             path = os.path.join(os.getcwd(), path)
         if not os.path.isdir(path):
@@ -84,68 +82,43 @@ class AxleAgentServer:
         except Exception as e:
             return {"error": str(e)}
 
-    def _make_handler(self):
-        server_ref = self
-
-        class Handler(BaseHTTPRequestHandler):
-            def _send_json(self, status, data):
-                self.send_response(status)
-                self.send_header("Content-Type", "application/json")
-                self.end_headers()
-                self.wfile.write(json.dumps(data).encode("utf-8"))
-
-            def do_GET(self):
-                if self.path.startswith("/skills"):
-                    result = server_ref.handle_skills()
-                    self._send_json(200, result)
-                elif self.path.startswith("/reload"):
-                    result = server_ref.handle_reload()
-                    self._send_json(200, result)
-                elif self.path.startswith("/clear"):
-                    result = server_ref.handle_clear()
-                    self._send_json(200, result)
-                else:
-                    self._send_json(404, {"error": "Not found"})
-
-            def do_POST(self):
-                content_length = int(self.headers.get("Content-Length", 0))
-                body = self.rfile.read(content_length) if content_length > 0 else b""
+    async def handle_client(self, websocket, path=None):
+        self.clients.add(websocket)
+        try:
+            async for message in websocket:
                 try:
-                    payload = json.loads(body) if body else {}
+                    payload = json.loads(message)
                 except json.JSONDecodeError:
                     payload = {}
-
-                if self.path.startswith("/talk"):
+                msg_type = payload.get("type", "")
+                result = None
+                if msg_type == "talk":
                     text = payload.get("text", "")
-                    result = server_ref.handle_talk(text)
-                    self._send_json(200, result)
-                elif self.path.startswith("/cd"):
-                    path = payload.get("path", "")
-                    result = server_ref.handle_cd(path)
-                    self._send_json(200, result)
+                    result = self.handle_talk(text)
+                elif msg_type == "skills":
+                    result = self.handle_skills()
+                elif msg_type == "reload":
+                    result = self.handle_reload()
+                elif msg_type == "clear":
+                    result = self.handle_clear()
+                elif msg_type == "cd":
+                    path_val = payload.get("path", "")
+                    result = self.handle_cd(path_val)
                 else:
-                    self._send_json(404, {"error": "Not found"})
+                    result = {"error": "Unknown message type"}
+                await websocket.send(json.dumps(result))
+        finally:
+            self.clients.discard(websocket)
 
-        return Handler
+    async def start_async(self):
+        async with websockets.serve(self.handle_client, self.host, self.port):
+            print(f"WebSocket server running on ws://{self.host}:{self.port}")
+            await asyncio.Future()  # run forever
 
-    def start(self):
-        handler = self._make_handler()
-        self.http_server = HTTPServer((self.host, self.port), handler)
-        print(f"HTTP server running on {self.host}:{self.port}")
-        try:
-            self.http_server.serve_forever()
-        except KeyboardInterrupt:
-            print("\nShutting down...")
-            self.http_server.shutdown()
-
-    def start_in_thread(self):
-        """Starts the server in a background thread and returns it."""
-        server_ref = self
-        thread = threading.Thread(target=server_ref.start, daemon=True)
-        thread.start()
-        return thread
+    def run(self):
+        asyncio.run(self.start_async())
 
 
 if __name__ == "__main__":
     server = AxleAgentServer()
-    server.start()
+    server.run()

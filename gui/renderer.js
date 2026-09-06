@@ -1,4 +1,8 @@
-const SERVER_URL = 'http://127.0.0.1:8080';
+const WS_URL = 'ws://127.0.0.1:8080';
+
+let ws = null;
+let reconnectTimer = null;
+let pendingType = null;
 
 const messageInput = document.getElementById('message-input');
 const btnSend = document.getElementById('btn-send');
@@ -24,84 +28,80 @@ function setStatus(text, isError = false) {
   serverStatus.className = `server-status ${isError ? 'error' : 'ok'}`;
 }
 
-async function apiRequest(endpoint, method = 'GET', body = null) {
-  const options = {
-    method,
-    headers: { 'Content-Type': 'application/json' }
+function scheduleReconnect() {
+  if (reconnectTimer) clearTimeout(reconnectTimer);
+  reconnectTimer = setTimeout(connect, 3000);
+}
+
+function connect() {
+  ws = new WebSocket(WS_URL);
+
+  ws.onopen = () => {
+    setStatus('Connected');
   };
-  if (body) {
-    options.body = JSON.stringify(body);
-  }
-  const response = await fetch(`${SERVER_URL}${endpoint}`, options);
-  return await response.json();
-}
 
-async function checkServer() {
-  try {
-    const res = await fetch(`${SERVER_URL}/skills`);
-    if (res.ok) {
-      setStatus('Connected');
-    } else {
-      setStatus('Offline', true);
+  ws.onmessage = (event) => {
+    let data;
+    try {
+      data = JSON.parse(event.data);
+    } catch (e) {
+      data = event.data;
     }
-  } catch (err) {
+    handleResponse(data);
+  };
+
+  ws.onerror = () => {
     setStatus('Offline', true);
+  };
+
+  ws.onclose = () => {
+    setStatus('Offline', true);
+    scheduleReconnect();
+  };
+}
+
+function sendRequest(type, payload = {}) {
+  if (ws && ws.readyState === WebSocket.OPEN) {
+    pendingType = type;
+    ws.send(JSON.stringify({ type, ...payload }));
+  } else {
+    addMessage('error', 'Server is not connected');
   }
 }
 
-async function handleSend() {
+function handleResponse(data) {
+  if (data && typeof data === 'object' && data.error) {
+    addMessage('error', data.error);
+    return;
+  }
+  const text = typeof data === 'string' ? data : JSON.stringify(data);
+  addMessage('agent', text);
+}
+
+function handleSend() {
   const text = messageInput.value.trim();
   if (!text) return;
   addMessage('user', text);
   messageInput.value = '';
-  try {
-    const data = await apiRequest('/talk', 'POST', { text });
-    if (data.error) {
-      addMessage('error', data.error);
-    } else {
-      addMessage('agent', typeof data === 'string' ? data : JSON.stringify(data));
-    }
-  } catch (err) {
-    addMessage('error', 'Failed to reach server');
-  }
+  sendRequest('talk', { text });
 }
 
-async function handleSkills() {
-  try {
-    const data = await apiRequest('/skills', 'GET');
-    addMessage('agent', JSON.stringify(data));
-  } catch (err) {
-    addMessage('error', 'Failed to reach server');
-  }
+function handleSkills() {
+  sendRequest('skills');
 }
 
-async function handleReload() {
-  try {
-    const data = await apiRequest('/reload', 'GET');
-    addMessage('agent', typeof data === 'string' ? data : JSON.stringify(data));
-  } catch (err) {
-    addMessage('error', 'Failed to reach server');
-  }
+function handleReload() {
+  sendRequest('reload');
 }
 
-async function handleClear() {
-  try {
-    const data = await apiRequest('/clear', 'GET');
-    addMessage('agent', typeof data === 'string' ? data : JSON.stringify(data));
-  } catch (err) {
-    addMessage('error', 'Failed to reach server');
-  }
+function handleClear() {
+  sendRequest('clear');
 }
 
-async function handleCd() {
+function handleCd() {
   const path = cdPath.value.trim();
   if (!path) return;
-  try {
-    const data = await apiRequest('/cd', 'POST', { path });
-    addMessage('agent', typeof data === 'string' ? data : JSON.stringify(data));
-  } catch (err) {
-    addMessage('error', 'Failed to reach server');
-  }
+  sendRequest('cd', { path });
 }
 
 btnSend.addEventListener('click', handleSend);
@@ -116,5 +116,4 @@ btnReload.addEventListener('click', handleReload);
 btnClear.addEventListener('click', handleClear);
 btnCd.addEventListener('click', handleCd);
 
-checkServer();
-setInterval(checkServer, 10000);
+connect();
