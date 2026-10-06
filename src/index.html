@@ -1,0 +1,26 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Open Axle</title>
+</head>
+<body>
+  <div id="app">
+    <!-- Tab bar for multiple LLM configurations. One tab per model + an Add tab. -->
+    <nav id="tab-bar" class="tab-bar hidden"></nav>
+
+    <!--
+      Workspaces container. Each configured model gets its OWN workspace panel
+      dynamically created by the renderer. Panels are NOT shared: each has its
+      own chat-log, message input, controls, cd path and server-status.
+
+      Config panels are ALSO built dynamically here: clicking the '+' tab opens
+      a temporary config tab whose panel contains a form to add a new LLM. Only
+      the active panel is visible; the rest carry the "hidden" class.
+    -->
+    <div id="workspaces" class="workspaces hidden"></div>
+  </div>
+  <script defer src="./renderer.ts"></script>
+</body>
+</html>

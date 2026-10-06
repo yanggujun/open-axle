@@ -1,0 +1,770 @@
+body {
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  margin: 0;
+  padding: 0;
+  height: 100vh;
+  display: flex;
+  flex-direction: column;
+  background-color: #1e1e1e;
+  color: #e0e0e0;
+}
+
+#app {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+header {
+  background-color: #252526;
+  padding: 15px 20px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  border-bottom: 1px solid #444;
+}
+
+h1 {
+  margin: 0;
+  font-size: 20px;
+  color: #4fc3f7;
+}
+
+.controls {
+  display: flex;
+  gap: 10px;
+  padding: 12px 20px;
+  background-color: #2d2d30;
+  flex-wrap: wrap;
+  border-bottom: 1px solid #444;
+}
+
+.controls button {
+  background-color: #3c3c3c;
+  border: 1px solid #555;
+  color: #ccc;
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.controls button:hover {
+  background-color: #4a4a4a;
+}
+
+.cd-control {
+  display: inline-flex;
+  gap: 6px;
+  flex: 1;
+}
+
+.cd-control input {
+  flex: 1;
+  padding: 8px;
+  background-color: #1e1e1e;
+  border: 1px solid #444;
+  color: #e0e0e0;
+  border-radius: 4px;
+}
+
+.chat-log {
+  flex: 1;
+  overflow-y: auto;
+  padding: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  background-color: #1a1a1a;
+}
+
+.message {
+  padding: 10px;
+  border-radius: 6px;
+  max-width: 80%;
+}
+
+.message.user {
+  align-self: flex-end;
+  background-color: #2e7d32;
+  color: #c1c4f7;
+}
+
+.message.error {
+  align-self: center;
+  background-color: #c62828;
+  color: #ffebee;
+}
+
+.input-area {
+  display: flex;
+  gap: 10px;
+  padding: 15px 20px;
+  background-color: #252526;
+  border-top: 1px solid #444;
+}
+
+.input-area textarea {
+  flex: 1;
+  resize: none;
+  padding: 10px;
+  background-color: #1e1e1e;
+  border: 1px solid #444;
+  color: #e0e0e0;
+  border-radius: 4px;
+  font-family: inherit;
+}
+
+.input-area button {
+  background-color: #4fc3f7;
+  border: none;
+  color: #1e1e1e;
+  padding: 0 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.input-area button:hover {
+  background-color: #81d4fa;
+}
+
+.time {
+  font-size: 12px;
+  opacity: 0.7;
+  margin-right: 8px;
+}
+
+.message-body {
+  white-space: pre-wrap; 
+}
+
+/* ============================================================
+   Tabbed multi-model layout
+   ------------------------------------------------------------
+   The renderer toggles the `.hidden` class to show only the
+   active tab's panel. Without a `.hidden` rule every panel
+   rendered at once (the reported bug). These rules ensure the
+   tab bar sits at the top and only the active panel fills the
+   remaining space.
+   ============================================================ */
+
+/* Truly hide any element carrying the .hidden class. */
+.hidden {
+  display: none !important;
+}
+
+/* Horizontal row of tab buttons pinned at the top. */
+#tab-bar,
+.tab-bar {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  gap: 2px;
+  padding: 6px 8px 0 8px;
+  background-color: #252526;
+  border-bottom: 1px solid #444;
+  overflow-x: auto;
+  flex: 0 0 auto;
+}
+
+.tab-button {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: #2d2d30;
+  border: 1px solid #444;
+  border-bottom: none;
+  color: #ccc;
+  padding: 8px 12px 8px 16px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.tab-button:hover {
+  background-color: #3a3a3d;
+}
+
+.tab-button.active {
+  background-color: #1a1a1a;
+  color: #4fc3f7;
+  border-color: #4fc3f7;
+  font-weight: bold;
+}
+
+.tab-button.add-tab {
+  color: #a5d6a7;
+}
+
+.tab-button.config-tab {
+  color: #ffcc80;
+}
+
+/* Workspaces container fills the remaining height below the tab bar. */
+#workspaces,
+.workspaces {
+  flex: 1 1 auto;
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Each per-model workspace panel (and the config panel) fills the
+   workspaces area as a vertical flex column. Only the non-hidden
+   panel is visible, so each tab shows its own page. */
+.workspace,
+#workspaces > .chat-area,
+#workspaces > .config-page {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* The dynamically-created config panel: give it comfortable padding
+   and allow scrolling if the form is tall. */
+.config-page {
+  padding: 24px;
+  overflow-y: auto;
+}
+
+.config-page h2 {
+  margin-top: 0;
+  color: #4fc3f7;
+}
+
+.config-form {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 480px;
+}
+
+.config-form .form-group {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.config-form .form-group.checkbox-group {
+  flex-direction: row;
+  align-items: center;
+  gap: 8px;
+}
+
+.config-form label {
+  font-size: 13px;
+  color: #bbb;
+}
+
+.config-form input[type="text"],
+.config-form input[type="password"] {
+  padding: 8px;
+  background-color: #1e1e1e;
+  border: 1px solid #444;
+  color: #e0e0e0;
+  border-radius: 4px;
+}
+
+.config-form button[type="submit"] {
+  align-self: flex-start;
+  background-color: #4fc3f7;
+  border: none;
+  color: #1e1e1e;
+  padding: 10px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.config-form button[type="submit"]:hover {
+  background-color: #81d4fa;
+}
+
+/* Broadcast messages default styling (agent-like). */
+.message.broadcast {
+  align-self: flex-start;
+  background-color: #424e68;
+  color: #c9b758;
+}
+
+/* Tab label takes the available space so the close (×) is pushed to the
+   right edge of the tab, well separated from the model name. */
+.tab-label {
+  flex: 1;
+}
+
+/* Close (×) icon: subtle, right-aligned, highlights on hover. */
+.tab-close {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: #888;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tab-close:hover {
+  color: #fff;
+  background-color: #c62828;
+}
+
+/* ---- '+ Add' dropdown menu ---- */
+.add-menu {
+  position: fixed;
+  background-color: #252526;
+  border: 1px solid #444;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+  min-width: 200px;
+  z-index: 1000;
+  padding: 4px;
+}
+
+.add-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #ccc;
+  padding: 8px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.add-menu-item:hover {
+  background-color: #3a3a3d;
+}
+
+.add-menu-new {
+  color: #a5d6a7;
+}
+
+.add-menu-divider {
+  height: 1px;
+  background-color: #444;
+  margin: 4px 0;
+}
+
+/* ---- Config form actions (Add LLM / Cancel) ---- */
+.config-actions {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  margin-top: 4px;
+}
+
+.config-cancel {
+  background-color: #3c3c3c;
+  border: 1px solid #555;
+  color: #ccc;
+  padding: 10px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.config-cancel:hover {
+  background-color: #4a4a4a;
+}
+
+/* ============================================================
+   Folder-chooser modal dialog
+   ------------------------------------------------------------
+   The renderer builds a full-screen .dir-modal-overlay backdrop
+   (positioned inline in renderer.ts) that centers the .dir-dialog
+   card. These rules give the dialog a clean, modern dark-theme
+   card layout with a scrollable directory list.
+   ============================================================ */
+
+/* Backdrop (defensive; inline styles in renderer.ts already set position). */
+.dir-modal-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.55);
+  z-index: 10000;
+}
+
+/* The dialog card. */
+.dir-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 480px;
+  max-width: 90vw;
+  max-height: 80vh;
+  background-color: #252526;
+  color: #e0e0e0;
+  border: 1px solid #444;
+  border-radius: 10px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+  overflow: hidden;
+}
+
+/* Title bar with the close (×) pushed to the right. */
+.dir-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 14px 16px;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #444;
+  font-size: 15px;
+  font-weight: bold;
+  color: #4fc3f7;
+}
+
+.dir-dialog-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 20px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.dir-dialog-close:hover {
+  color: #fff;
+  background-color: #c62828;
+}
+
+/* Body stacks the breadcrumb path over the scrollable list. It must be able
+   to shrink (min-height: 0) and hide its own overflow so the list child is
+   the only scrolling area. */
+.dir-dialog-body {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+  padding: 12px 16px;
+  gap: 10px;
+  overflow: hidden;
+  box-sizing: border-box;
+}
+
+/* Subtle breadcrumb showing the current path. Never shrink it. */
+.dir-dialog-path {
+  flex: 0 0 auto;
+  font-size: 12px;
+  color: #9e9e9e;
+  background-color: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 8px 10px;
+  word-break: break-all;
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+/* Scrollable directory list. Using min-height: 0 lets the flex child shrink
+   correctly so the last row is never clipped to half a line, and
+   box-sizing: border-box keeps the padding inside the scroll area. */
+.dir-dialog-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  overflow-y: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  background-color: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 6px;
+  box-sizing: border-box;
+  scroll-padding-block: 6px;
+}
+
+/* Directory rows: full width, left-aligned, hover highlight.
+   These are <button> elements that become flex items inside the flex-column
+   .dir-dialog-list. Without flex: 0 0 auto the browser SHRINKS each row when
+   the list overflows, collapsing rows to half a line. Locking flex-basis to
+   auto with a stable min-height/line-height guarantees every folder renders
+   as a full, consistent row. */
+.dir-item,
+.dir-up {
+  flex: 0 0 auto;
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #e0e0e0;
+  padding: 8px 10px;
+  min-height: 34px;
+  line-height: 18px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dir-item::before {
+  content: '\1F4C1';
+  margin-right: 8px;
+}
+
+.dir-up {
+  color: #a5d6a7;
+  font-style: italic;
+}
+
+.dir-item:hover,
+.dir-up:hover {
+  background-color: #37373a;
+}
+
+/* Footer with right-aligned action buttons. */
+.dir-dialog-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  padding: 12px 16px;
+  background-color: #2d2d30;
+  border-top: 1px solid #444;
+}
+
+.dir-dialog-footer button {
+  background-color: #3c3c3c;
+  border: 1px solid #555;
+  color: #ccc;
+  padding: 8px 16px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.dir-dialog-footer button:hover {
+  background-color: #4a4a4a;
+}
+
+/* Distinct primary action (Select this folder). */
+.dir-dialog-footer button.primary {
+  background-color: #4fc3f7;
+  border: none;
+  color: #1e1e1e;
+  font-weight: bold;
+}
+
+.dir-dialog-footer button.primary:hover {
+  background-color: #81d4fa;
+}
+
+pre code.hljs,
+code.hljs,
+.hljs {
+  background: #b0bb9d;   /* your desired background color */
+  color: #a15858;        /* optional: text color for contrast */
+  border-radius: 8px;
+}
+
+pre {
+  background: #4b4b74;
+  padding: 12px 16px;
+  border-radius: 8px;
+  overflow: auto;
+}
+
+/* ============================================================
+   Stop button
+   ------------------------------------------------------------
+   Styles moved out of renderer.ts (previously set inline in
+   styleStopButton()). The button carries the 'stop-btn' class;
+   its disabled appearance is driven by the :disabled pseudo-class
+   (toggled via the button's disabled property in handleResponse).
+   ============================================================ */
+.stop-btn {
+  background-color: #3c3c3c;
+  border: 1px solid #555;
+  color: #ccc;
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.stop-btn:hover:not(:disabled) {
+  background-color: #4a4a4a;
+}
+
+.stop-btn:disabled {
+  color: #7a7979;
+  border-color: #d0d0d0;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* ============================================================
+   Send button (disabled state)
+   ------------------------------------------------------------
+   The Send button carries the 'send-btn' class (see buildWorkspace
+   in renderer.ts). While the agent is running a continuous task
+   loop it is disabled (handleResponse sets btnSend.disabled =
+   running), so the user cannot queue new input mid-task. The
+   :disabled rule below grays it out so the inactive state is
+   obvious -- mirroring the .stop-btn disabled treatment above.
+
+   The :hover companion is required because `.input-area button:hover`
+   (specificity 0,2,1) would otherwise repaint the disabled button in
+   its hover blue. The grouped selector (0,3,0) wins and keeps the
+   button muted regardless of pointer state.
+   ============================================================ */
+.send-btn:disabled,
+.send-btn:disabled:hover {
+  background-color: #cccccc;
+  color: #888888;
+  border-color: #cccccc;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* ============================================================
+   Logs window (non-modal floating log viewer)
+   ------------------------------------------------------------
+   Styles moved out of src/logsWindow.ts so all theming lives
+   here. The panel is opened by the leftmost 'Logs' button of the
+   workspace button bar and floats above the chat window without
+   blocking it.
+
+   The geometry is deliberately dynamic: the renderer measures the
+   visible .chat-log window and overrides only these two custom
+   properties at open time and on every resize
+   (--logs-width / --logs-height). The values below are the
+   fallbacks used when nothing has been measured yet.
+   ============================================================ */
+.logs-window {
+  /* Fallbacks: 1/3 of the screen width, 60% of the screen height. */
+  width: var(--logs-width, 33vw);
+  height: var(--logs-height, 60vh);
+
+  position: fixed;
+  top: 48px;
+  right: 16px;
+  z-index: 9000;
+
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+
+  background-color: #1a1a1a;
+  color: #e0e0e0;
+  border: 1px solid #444;
+  border-radius: 8px;
+  box-shadow: 0 12px 40px rgba(0, 0, 0, 0.55);
+}
+
+/* Title bar with the file path and the close (x) pushed to the right. */
+.logs-window-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #444;
+}
+
+.logs-window-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #4fc3f7;
+  white-space: nowrap;
+}
+
+/* Path of the followed log file. */
+.logs-window-path {
+  flex: 1;
+  font-size: 11px;
+  color: #9e9e9e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+/* Close (x) icon: subtle, highlights on hover. */
+.logs-window-close {
+  margin-left: auto;
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 20px;
+  line-height: 1;
+  width: 28px;
+  height: 28px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.logs-window-close:hover {
+  color: #fff;
+  background-color: #c62828;
+}
+
+/* Scrollable, pre-formatted log content. It flex-fills the rest of the
+   panel and is the only scrolling area, so the whole log can be shown and
+   the view can stay pinned to the bottom. */
+.logs-window-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  background-color: #141414;
+  color: #d4d4d4;
+}
+
+/* The leftmost 'Logs' button on the workspace button bar. It is a
+   .controls button, so it inherits that look; this rule keeps it
+   working on its own as well. */
+.logs-btn {
+  background-color: #3c3c3c;
+  border: 1px solid #555;
+  color: #ccc;
+  padding: 8px 14px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.logs-btn:hover {
+  background-color: #4a4a4a;
+}
+
+/* ============================================================
+   Reasoning messages (thinking trace)
+   ------------------------------------------------------------
+   The agent forwards its thinking trace via the conduit with
+   the format "reasoning" (see src/core/agent.ts). The renderer
+   tags those messages with the '.message.reasoning' class.
+   They are shown in italic and 1px smaller than normal chat
+   messages (base message font-size resolves to 16px, so 15px).
+   ============================================================ */
+.message.reasoning,
+.message.reasoning .message-body {
+  font-style: italic;
+  font-size: 14px;   /* 1 unit smaller than the base 16px chat message */
+  color: #d5e502;   /* dark gray: midway between #808080 gray and #000000 black */
+}

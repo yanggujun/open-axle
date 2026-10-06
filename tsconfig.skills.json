@@ -1,0 +1,16 @@
+{
+  "compilerOptions": {
+    "rootDir": "src/skills",
+    "outDir": "dist/skills",
+    "module": "commonjs",
+    "target": "ES6",
+    "esModuleInterop": true,
+    "moduleResolution": "node",
+    "resolveJsonModule": true,
+    "skipLibCheck": true,
+    "sourceMap": false,
+    "declaration": false,
+    "noEmitOnError": false
+  },
+  "include": ["src/skills/**/*.ts"]
+}
