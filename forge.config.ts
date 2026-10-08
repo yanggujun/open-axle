@@ -88,8 +88,23 @@ const config: ForgeConfig = {
     new MakerZIP({}, ['darwin']),
     new MakerZIP({}, ['linux']),
     new MakerZIP({}, ['win32']),
-    new MakerRpm({}),
-    new MakerDeb({}),
+    // package.json `name` is "open-axle" while productName/executableName is
+    // "Open-Axle". The deb/rpm installers default the expected binary to the
+    // package.json `name` ("open-axle"), so they fail with
+    // "could not find the Electron app binary at .../open-axle".
+    // Pin options.bin (and productName) to the actual packaged executable name.
+    new MakerRpm({
+      options: {
+        bin: 'Open-Axle',
+        productName: 'Open-Axle',
+      },
+    }),
+    new MakerDeb({
+      options: {
+        bin: 'Open-Axle',
+        productName: 'Open-Axle',
+      },
+    }),
   ],
   plugins: [
     new AutoUnpackNativesPlugin({}),
