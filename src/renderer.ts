@@ -1,8 +1,11 @@
 import 'highlight.js/styles/github.css'
 import './styles.css';
+import './workingDir.css';
 import MarkdownIt from 'markdown-it';
 import hljs from 'highlight.js';
 import { openLogsWindow } from './logsWindow';
+import { openFolderChooser } from './workingDir';
+import type { RemoteServer } from './workingDir';
 
 // The renderer runs sandboxed (contextIsolation: true, nodeIntegration: false).
 // It must NOT import Node core modules (fs) or main-only Electron APIs.
@@ -44,6 +47,8 @@ declare global {
       validateDir(dir: string): Promise<boolean>;
       getDefaultDir(): Promise<string>;
       listDir(dir: string): Promise<string[]>;
+      listRemoteDir(serverName: string, remotePath?: string): Promise<{ path: string; dirs: string[]; error: string }>;
+      getRemoteServers(): Promise<RemoteServer[]>;
       getWorkingDir(modelName: string): Promise<string>;
       setWorkingDir(dir: string, modelName: string): Promise<boolean>;
       onBroadcast(cb: (data: AxleBroadcast) => void): () => void;
@@ -179,185 +184,6 @@ function renderMessageInto(log: HTMLElement, type: string, text: string, format 
   log.scrollTop = log.scrollHeight;
 }
 
-// ---- Folder-selection dialog ----
-
-/**
- * Standalone, promise-based directory picker dialog. It is fully independent
- * of the workspace and returns the selected path (or null when cancelled).
- */
-function openFolderChooser(modelName: string): Promise<string | null> {
-  // Remove any existing overlay/dialog.
-  const existingOverlay = document.querySelector('.dir-modal-overlay');
-  if (existingOverlay) existingOverlay.remove();
-  const existingDialog = document.querySelector('.dir-dialog');
-  if (existingDialog) existingDialog.remove();
-
-  // Full-screen backdrop that turns the dialog into a true modal. Inline
-  // styles guarantee correct positioning even without CSS changes.
-  const overlay = document.createElement('div');
-  overlay.className = 'dir-modal-overlay';
-  overlay.style.position = 'fixed';
-  overlay.style.top = '0';
-  overlay.style.left = '0';
-  overlay.style.right = '0';
-  overlay.style.bottom = '0';
-  overlay.style.width = '100vw';
-  overlay.style.height = '100vh';
-  overlay.style.display = 'flex';
-  overlay.style.alignItems = 'center';
-  overlay.style.justifyContent = 'center';
-  overlay.style.background = 'rgba(43, 41, 41, 0.5)';
-  overlay.style.zIndex = '10000';
-
-  const dialog = document.createElement('div');
-  dialog.className = 'dir-dialog';
-  // Ensure the dialog sits centered within the overlay rather than flowing
-  // into the page under the send button. A DEFINITE height (not just
-  // max-height) is required so the flex column gives the directory list a
-  // bounded height to scroll within; otherwise the last row is clipped to
-  // half a line when there are many folders.
-  dialog.style.position = 'relative';
-  dialog.style.margin = '0';
-  dialog.style.display = 'flex';
-  dialog.style.flexDirection = 'column';
-  dialog.style.maxWidth = '90vw';
-  dialog.style.height = '70vh';
-  dialog.style.maxHeight = '80vh';
-
-  const header = document.createElement('div');
-  header.className = 'dir-dialog-header';
-
-  const title = document.createElement('span');
-  title.textContent = 'Choose a folder';
-
-  const closeBtn = document.createElement('button');
-  closeBtn.textContent = '×';
-  closeBtn.className = 'dir-dialog-close';
-
-  header.appendChild(title);
-  header.appendChild(closeBtn);
-
-  const dialogBody = document.createElement('div');
-  dialogBody.className = 'dir-dialog-body';
-  // Body must flex-fill the space between header and footer and be allowed to
-  // shrink (minHeight:0) so its list child becomes the bounded scroll region.
-  dialogBody.style.display = 'flex';
-  dialogBody.style.flexDirection = 'column';
-  dialogBody.style.flex = '1 1 auto';
-  dialogBody.style.minHeight = '0';
-  dialogBody.style.overflow = 'hidden';
-
-  const pathLabel = document.createElement('div');
-  pathLabel.className = 'dir-dialog-path';
-  // Breadcrumb keeps its natural height and never shrinks.
-  pathLabel.style.flex = '0 0 auto';
-  dialogBody.appendChild(pathLabel);
-
-  const list = document.createElement('div');
-  list.className = 'dir-dialog-list';
-  // The list takes ALL remaining vertical space and scrolls internally.
-  // Inline styles are used so they always win over any conflicting CSS.
-  list.style.flex = '1 1 auto';
-  list.style.minHeight = '0';
-  list.style.overflowY = 'auto';
-  dialogBody.appendChild(list);
-
-  const footer = document.createElement('div');
-  footer.className = 'dir-dialog-footer';
-
-  const cancelBtn = document.createElement('button');
-  cancelBtn.textContent = 'Cancel';
-  const selectBtn = document.createElement('button');
-  selectBtn.textContent = 'Select this folder';
-  selectBtn.className = 'primary';
-
-  footer.appendChild(cancelBtn);
-  footer.appendChild(selectBtn);
-
-  dialog.appendChild(header);
-  dialog.appendChild(dialogBody);
-  dialog.appendChild(footer);
-  overlay.appendChild(dialog);
-  document.body.appendChild(overlay);
-
-  let currentPath = '';
-
-  function joinPath(dir: string, name: string): string {
-    const sep = dir.includes('\\') ? '\\' : '/';
-    return dir.endsWith(sep) ? dir + name : dir + sep + name;
-  }
-
-  function parentPath(dir: string): string {
-    const sep = dir.includes('\\') ? '\\' : '/';
-    const idx = dir.lastIndexOf(sep);
-    if (idx <= 0) return dir;
-    return dir.substring(0, idx);
-  }
-
-  async function loadDir(dir: string): Promise<void> {
-    currentPath = dir;
-    pathLabel.textContent = dir;
-    const dirs = await window.axle.listDir(dir);
-    list.innerHTML = '';
-
-    // 'Up' navigation
-    const up = document.createElement('button');
-    up.textContent = '.. (up)';
-    up.className = 'dir-up';
-    up.addEventListener('click', () => {
-      const p = parentPath(currentPath);
-      if (p !== currentPath) loadDir(p);
-    });
-    list.appendChild(up);
-
-    for (const d of dirs) {
-      const item = document.createElement('button');
-      item.textContent = d;
-      item.className = 'dir-item';
-      item.addEventListener('click', () => loadDir(joinPath(currentPath, d)));
-      list.appendChild(item);
-    }
-  }
-
-  // Return a promise that resolves with the selected folder or null.
-  return new Promise((resolve) => {
-    // Tear down the modal: remove the overlay and detach the Escape listener.
-    const cleanup = (): void => {
-      document.removeEventListener('keydown', onKeydown);
-      overlay.remove();
-    };
-
-    // Escape key closes the modal (treated as a cancel).
-    const onKeydown = (ev: KeyboardEvent): void => {
-      if (ev.key === 'Escape') {
-        cleanup();
-        resolve(null);
-      }
-    };
-    document.addEventListener('keydown', onKeydown);
-
-    closeBtn.addEventListener('click', () => { cleanup(); resolve(null); });
-    cancelBtn.addEventListener('click', () => { cleanup(); resolve(null); });
-    selectBtn.addEventListener('click', () => {
-      if (!currentPath) return;
-      const chosen = currentPath;
-      cleanup();
-      resolve(chosen);
-    });
-
-    // Clicking the backdrop (outside the dialog box) cancels the modal.
-    overlay.addEventListener('click', (ev: MouseEvent) => {
-      if (ev.target === overlay) {
-        cleanup();
-        resolve(null);
-      }
-    });
-
-    // Start browsing from the default working dir.
-    window.axle.getWorkingDir(modelName).then(loadDir);
-  });
-}
-
 /**
  * Build an isolated workspace panel for a single model and wire up all of its
  * per-tab event handlers (bound to this model's name). Returns the Workspace.
@@ -482,11 +308,18 @@ function buildWorkspace(model: ModelConfig): Workspace {
 
   btnCd.addEventListener('click', async () => {
     const chosenDir = await openFolderChooser(modelName);
-    if (chosenDir) {
-      await window.axle.setWorkingDir(chosenDir, modelName);
-      await window.axle.cd(chosenDir, modelName);
+    if (!chosenDir) return;
+
+    // A remote-server selection ('remote://<name>') is NOT a local path, so it
+    // must not be routed through setWorkingDir/cd. Just surface the selection.
+    if (chosenDir.startsWith('remote://')) {
       dirLabel.textContent = chosenDir;
+      return;
     }
+
+    await window.axle.setWorkingDir(chosenDir, modelName);
+    await window.axle.cd(chosenDir, modelName);
+    dirLabel.textContent = chosenDir;
   });
 
   // Stop button: request the agent to break out of its continuous task loop.

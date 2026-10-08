@@ -285,6 +285,80 @@ export function getSkillConfig(skillName: string, name: string): Record<string, 
   return config;
 }
 
+/**
+ * A remote server entry discovered from the 'ssh' / 'scp' skill config items
+ * in .skill.config. `name` is the config item name (the value the executor's
+ * ssh/scp skills use to look the server up).
+ */
+export interface RemoteServer {
+  name: string;
+  skill: string;
+  host?: string;
+  port?: string;
+  userName?: string;
+  authType?: string;
+}
+
+/**
+ * Return the list of configured remote servers, extracted from the 'ssh' and
+ * 'scp' skills in .skill.config. The '.skill.config' structure is:
+ *   { skill_configs: [ { skill: 'ssh'|'scp'|..., config_items: [
+ *       { name: '<server-name>', value: { host, port, user_name, auth_type,
+ *         pass, key_file } } ] } ] }
+ * Server names are de-duplicated across the two skills (a server may be
+ * declared under both 'ssh' and 'scp'; the first occurrence wins).
+ */
+export function getRemoteServers(): RemoteServer[] {
+  const appHome = getAppHome();
+  const configPath = path.join(appHome, ".skill.config");
+
+  const servers: RemoteServer[] = [];
+  const seen = new Set<string>();
+
+  if (!fs.existsSync(configPath)) {
+    return servers;
+  }
+
+  let fullConfig: any;
+  try {
+    fullConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+  } catch (error) {
+    logger.log("Failed to read skill config for remote servers");
+    return servers;
+  }
+
+  if (!fullConfig) {
+    return servers;
+  }
+
+  const REMOTE_SKILLS = ['ssh', 'scp'];
+  const axleList = fullConfig.skill_configs || [];
+  for (const entry of axleList) {
+    if (!REMOTE_SKILLS.includes(entry.skill)) {
+      continue;
+    }
+    const configItems = entry.config_items || [];
+    for (const item of configItems) {
+      const serverName = item.name;
+      if (!serverName || seen.has(serverName)) {
+        continue;
+      }
+      seen.add(serverName);
+      const value = item.value || {};
+      servers.push({
+        name: serverName,
+        skill: entry.skill,
+        host: value.host,
+        port: value.port,
+        userName: value.user_name,
+        authType: value.auth_type,
+      });
+    }
+  }
+
+  return servers;
+}
+
 export function validate(text: string): [TextType, string, string] {
   const stripped = text.trim();
   try {

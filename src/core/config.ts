@@ -34,11 +34,18 @@ export class LlmConfig {
       const raw = fs.readFileSync(this.configPath, 'utf-8');
       const parsed = JSON.parse(raw);
 
-      if (!parsed.models || !Array.isArray(parsed.models)) {
-        throw new Error('Invalid .llm.config file: "models" array is missing or not an array.');
+      if (!parsed || !parsed.models || !Array.isArray(parsed.models)) {
+        logger.log('No model is defined.');
       }
 
       this.config = parsed;
+      if (this.config?.models) {
+        for (const model of this.config?.models) {
+          if (model.workingDir != null && !isDirectory(model.workingDir)) {
+            model.workingDir = process.cwd();
+          }
+        }
+      }
     }
   }
 

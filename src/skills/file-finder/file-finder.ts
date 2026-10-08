@@ -262,7 +262,7 @@ function findFilesFromPayload(payload: string | Record<string, any>, baseDir?: s
   }
 
   if (matchedFiles.length === 0) {
-    return _wrapResponse('No file is found', false);
+    return _wrapResponse('No file is found', data.sequential);
   }
 
   const files = matchedFiles.join('\n') + '\n';

@@ -22,6 +22,20 @@ export interface AxleBroadcast {
 }
 
 /**
+ * A remote server entry discovered from the 'ssh' / 'scp' skills in
+ * .skill.config. Mirrors the RemoteServer interface in src/core/executor.ts.
+ * `name` is the config item name used by the ssh/scp skills to look it up.
+ */
+export interface RemoteServer {
+  name: string;
+  skill: string;
+  host?: string;
+  port?: string;
+  userName?: string;
+  authType?: string;
+}
+
+/**
  * The API surface exposed to the renderer as `window.axle`. All heavy lifting
  * (AxleAgent, skill discovery/execution, fs, dialog) lives in the MAIN process;
  * the renderer only talks to it over IPC.
@@ -77,6 +91,19 @@ const axleApi = {
   /** List subdirectories of the given directory. */
   listDir: (dir: string): Promise<string[]> => ipcRenderer.invoke('axle:listDir', dir),
 
+  /**
+   * List sub-directories of a directory on a REMOTE server, over SSH. Used by
+   * the folder-selection dialog's 'remote' tab to browse the remote home dir
+   * exactly like the local tab uses listDir. `serverName` matches a
+   * RemoteServer.name from getRemoteServers(); an empty `remotePath` starts
+   * from the login (home) directory.
+   */
+  listRemoteDir: (
+    serverName: string,
+    remotePath?: string
+  ): Promise<{ path: string; dirs: string[]; error: string }> =>
+    ipcRenderer.invoke('axle:listRemoteDir', serverName, remotePath),
+
   /** Get the working directory for a model. */
   getWorkingDir: (modelName: string): Promise<string | undefined> =>
     ipcRenderer.invoke('axle:getWorkingDir', modelName),
@@ -84,6 +111,14 @@ const axleApi = {
   /** Set/persist the working directory for a model. */
   setWorkingDir: (dir: string, modelName: string): Promise<boolean> =>
     ipcRenderer.invoke('axle:setWorkingDir', dir, modelName),
+
+  /**
+   * Return the list of configured remote servers, extracted from the 'ssh'
+   * and 'scp' skills in .skill.config. Used by the folder-selection dialog's
+   * 'remote' tab to populate the server drop-down.
+   */
+  getRemoteServers: (): Promise<RemoteServer[]> =>
+    ipcRenderer.invoke('axle:getRemoteServers'),
 
   /**
    * Subscribe to broadcasts pushed from the main process. Each payload

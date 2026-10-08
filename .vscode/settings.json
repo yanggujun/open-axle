@@ -20,7 +20,7 @@
     "**/.webpack": true
   },
   "workbench.colorCustomizations": {
-    "tab.activeBackground": "#1d3681",
+    "tab.activeBackground": "#305024",
     "activityBar.background": "#282c34",
     "sideBar.background": "#282c34",
     "tab.activeBorder": "#1d3681"

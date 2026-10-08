@@ -5,6 +5,8 @@ import { QueuedConduit, Protocol } from './core/conduit';
 import { LlmConfig, ModelConfig } from './core/config';
 import { logger } from './core/logger';
 import { Tail } from './core/tail';
+import { getRemoteServers, getSkillConfig } from './core/executor';
+import { execFile } from 'child_process';
 
 // Webpack entry points (defined by electron-forge's webpack plugin)
 declare const MAIN_WINDOW_WEBPACK_ENTRY: string;
@@ -66,6 +68,7 @@ function initAgents(): void {
       agents.set(model.name, createAgentFor(model));
     }
   } catch (error) {
+    logger.log(`Failed to initilize agents ${error}`)
     console.error('[axle] Failed to initialize agents:', error);
   }
 }
@@ -237,6 +240,113 @@ function registerIpc(): void {
       return cfg.getWorkingDir(modelName) ?? process.cwd();
     } catch {
       return '';
+    }
+  });
+
+  // Return the configured remote servers (from the 'ssh'/'scp' skills in
+  // .skill.config) for the folder-selection dialog's 'remote' tab drop-down.
+  ipcMain.handle('axle:getRemoteServers', () => {
+    try {
+      return getRemoteServers();
+    } catch {
+      return [];
+    }
+  });
+
+  // List sub-directories of a directory on a REMOTE server, over SSH. Used by
+  // the folder-selection dialog's 'remote' tab to browse the remote home dir
+  // exactly like the local tab. `serverName` matches a RemoteServer.name from
+  // getRemoteServers(); the SSH connection details come from getSkillConfig.
+  // When `remotePath` is empty we start from the login (home) directory.
+  ipcMain.handle('axle:listRemoteDir', async (_e, serverName: string, remotePath?: string) => {
+    try {
+      const servers = getRemoteServers();
+      const server = servers.find((s) => s.name === serverName);
+      if (!server) {
+        return { path: '', dirs: [], error: `Unknown remote server: ${serverName}` };
+      }
+
+      // Resolve the raw SSH connection details from .skill.config.
+      const cfg = getSkillConfig(server.skill, server.name) || {};
+      const host = cfg.host || server.host || '';
+      const port = cfg.port || server.port || '22';
+      const user = cfg.user_name || server.userName || '';
+      const authType = cfg.auth_type || server.authType || 'password';
+      const keyFile = cfg.key_file || '';
+      const password = cfg.pass || '';
+
+      if (!host) {
+        return { path: '', dirs: [], error: `No host configured for server: ${serverName}` };
+      }
+
+      // Single-quote a remote path so it stays safe when embedded in the shell
+      // command executed on the remote host (replaces the removed
+      // shellSingleQuote helper).
+      const quoteRemotePath = (p: string): string => "'" + p.replace(/'/g, "'\\''") + "'";
+
+      // Default to the login (home) dir when no path is supplied. `cd` with no
+      // argument goes home; otherwise we cd into the (single-quoted) path.
+      const dirExpr = remotePath ? `cd ${quoteRemotePath(remotePath)}` : 'cd';
+      const remoteCmd = `${dirExpr} && pwd && ls -1Ap | grep '/$' | sed 's#/$##'`;
+
+      // Run the command over SSH with the existing `ssh2` dependency instead of
+      // spawning the system `ssh` binary (replaces the removed sshExec helper).
+      const { Client } = require('ssh2');
+      const stdout = await new Promise<string>((resolve, reject) => {
+        const conn = new Client();
+        let out = '';
+        let errOut = '';
+        conn.on('ready', () => {
+          conn.exec(remoteCmd, (err: Error | undefined, stream: any) => {
+            if (err) {
+              conn.end();
+              reject(err);
+              return;
+            }
+            stream
+              .on('close', (code: number) => {
+                conn.end();
+                if (code && code !== 0 && !out) {
+                  reject(new Error(errOut || `Remote command exited with code ${code}`));
+                  return;
+                }
+                resolve(out);
+              })
+              .on('data', (chunk: Buffer) => {
+                out += chunk.toString();
+              });
+            stream.stderr.on('data', (chunk: Buffer) => {
+              errOut += chunk.toString();
+            });
+          });
+        });
+        conn.on('error', (err: Error) => reject(err));
+
+        const connectConfig: any = {
+          host,
+          port: Number(port) || 22,
+          username: user,
+          readyTimeout: 20000,
+        };
+        if (authType === 'key' && keyFile) {
+          connectConfig.privateKey = fs.readFileSync(keyFile);
+          if (password) {
+            connectConfig.passphrase = password;
+          }
+        } else {
+          connectConfig.password = password;
+        }
+        conn.connect(connectConfig);
+      });
+
+      const lines = stdout.split(/\r?\n/).filter((l) => l.length > 0);
+      const resolvedPath = lines.length > 0 ? lines[0] : (remotePath || '');
+      const dirs = lines.slice(1);
+      return { path: resolvedPath, dirs, error: '' };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('[axle] Failed to list remote dir:', msg);
+      return { path: '', dirs: [], error: msg };
     }
   });
 
