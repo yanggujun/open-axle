@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { exec, ExecOptions } from 'child_process';
-import { ExecutionResponse, extractJson, getSequential } from '../../core/executor';
+import { Client } from 'ssh2';
+import { buildConnectConfig, ExecutionResponse, extractJson, getSequential, Runtime, shellQuote } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -172,7 +173,7 @@ function _normalize(payload: Record<string, any>): Record<string, any> {
 
 const MAX_OUTPUT_SIZE = 1024 * 1024; // 1MB max
 
-async function runCommandFromPayload(payload: string | Record<string, any>, baseDir?: string): Promise<ExecutionResponse | string> {
+async function runCommandFromPayload(payload: string | Record<string, any>, runtime?: Runtime): Promise<ExecutionResponse | string> {
   let data: Record<string, any>;
   try {
     const raw = extractJson(payload) ?? {};
@@ -181,7 +182,7 @@ async function runCommandFromPayload(payload: string | Record<string, any>, base
     return `Invalid payload: ${e.message}`;
   }
 
-  baseDir = baseDir || process.cwd();
+  const baseDir = runtime?.workingDir?.path || process.cwd();
 
   // Resolve working directory.
   let fullCwd: string;
@@ -252,15 +253,167 @@ async function runCommandFromPayload(payload: string | Record<string, any>, base
 }
 
 // ---------------------------------------------------------------------------
+// Remote (SSH) command execution operation
+// ---------------------------------------------------------------------------
+
+/**
+ * Run a command on a remote server over SSH.
+ *
+ * @param payload    The raw JSON payload (same schema as the local runner).
+ * @param serverName The configured server name / host alias.
+ * @param remoteCwd  Absolute path on the remote host to run the command in.
+ * @param server     Optional already-resolved server config object.
+ */
+async function runCommandFromPayloadRemote(
+  payload: string | Record<string, any>,
+  runtime?: Runtime
+): Promise<ExecutionResponse | string> {
+  const baseDir = runtime?.workingDir;
+  const serverName = baseDir?.kind === 'remote' ? baseDir.serverName : '';
+  const remoteCwd = baseDir?.path;
+  const server = baseDir?.kind === 'remote' ? baseDir.server : {};
+  let data: Record<string, any>;
+  try {
+    const raw = extractJson(payload) ?? {};
+    data = _normalize(raw);
+  } catch (e: any) {
+    return `Invalid payload: ${e.message}`;
+  }
+
+  if (!serverName) {
+    return 'Missing remote server name for SSH execution.';
+  }
+
+  // Safety: check the target remote path for sensitive fragments.
+  const blockedCwd = _isBlockedPath(remoteCwd || '');
+  if (blockedCwd) {
+    return `Blocked path (contains '${blockedCwd}'); refusing to execute.`;
+  }
+
+  const serverCfg = server;
+  if (!serverCfg) {
+    return `No SSH configuration found for server '${serverName}'.`;
+  }
+
+  const connectConfig = buildConnectConfig(serverName, serverCfg);
+
+  // Build the remote command: cd into the remote working directory, then run.
+  const cdPrefix = remoteCwd ? `cd ${shellQuote(remoteCwd)} && ` : '';
+  const remoteCommand = cdPrefix + data.command;
+
+  return new Promise<ExecutionResponse>((resolve) => {
+    const conn = new Client();
+    let stdout = '';
+    let stderr = '';
+    let returncode = 0;
+    let settled = false;
+    let timer: NodeJS.Timeout | null = null;
+
+    const cleanupTimer = () => {
+      if (timer) {
+        clearTimeout(timer);
+        timer = null;
+      }
+    };
+
+    const finish = () => {
+      if (settled) return;
+      settled = true;
+      cleanupTimer();
+      try { conn.end(); } catch { /* ignore */ }
+
+      const cappedStdout = stdout.substring(0, MAX_OUTPUT_SIZE);
+      const cappedStderr = stderr.substring(0, MAX_OUTPUT_SIZE);
+
+      let out = `return code: ${returncode}\n\n`;
+      if (cappedStdout) {
+        out += cappedStdout + '\n';
+      }
+      if (cappedStderr) {
+        out += 'stderr\n';
+        out += cappedStderr;
+      }
+
+      const seq = data.sequential;
+      resolve(new ExecutionResponse(out, data.prompt, seq, !seq, 'json'));
+    };
+
+    // Enforce the timeout (exit code 124, mirroring coreutils `timeout`).
+    timer = setTimeout(() => {
+      if (returncode === 0) returncode = 124;
+      finish();
+    }, data.timeout * 1000);
+
+    conn.on('ready', () => {
+      conn.exec(remoteCommand, { env: data.env }, (err, stream) => {
+        if (err) {
+          stderr += err.message;
+          returncode = 1;
+          finish();
+          return;
+        }
+
+        stream.on('close', (code: number) => {
+          if (typeof code === 'number') returncode = code;
+          finish();
+        });
+
+        stream.on('data', (chunk: Buffer) => {
+          if (stdout.length < MAX_OUTPUT_SIZE) {
+            stdout += chunk.toString();
+          }
+        });
+
+        stream.stderr.on('data', (chunk: Buffer) => {
+          if (stderr.length < MAX_OUTPUT_SIZE) {
+            stderr += chunk.toString();
+          }
+        });
+      });
+    });
+
+    conn.on('error', (err: Error) => {
+      stderr += err.message;
+      returncode = 1;
+      finish();
+    });
+
+    try {
+      conn.connect(connectConfig);
+    } catch (e: any) {
+      stderr += e.message;
+      returncode = 1;
+      finish();
+    }
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Skill wrapper functions (called by the SkillManager)
 // ---------------------------------------------------------------------------
 
-function skillCmdRunnerExecute(jsonPayload: string, baseDir: string = ''): Promise<ExecutionResponse | string> {
-  return runCommandFromPayload(jsonPayload, baseDir.trim() || undefined);
+function skillCmdRunnerExecute(jsonPayload: string, runtime: Runtime): Promise<ExecutionResponse | string> {
+  return runCommandFromPayload(jsonPayload, runtime);
 }
 
-export function execute(jsonPayload: string, baseDir: string = ''): Promise<ExecutionResponse | string> {
-  return skillCmdRunnerExecute(jsonPayload, baseDir);
+/**
+ * New entry point: run a command on a remote host over SSH. Mirrors
+ * skillCmdRunnerExecute but targets the configured remote server.
+ */
+function skillCmdRunnerExecuteRemote(
+  jsonPayload: string, runtime?: Runtime
+): Promise<ExecutionResponse | string> {
+  return runCommandFromPayloadRemote(jsonPayload, runtime);
+}
+
+export function execute(jsonPayload: string, runtime: Runtime): Promise<ExecutionResponse | string> {
+  // Navigate the Runtime structure: the resolved working directory lives at
+  // runtime.workingDir (kind, serverName, path, server).
+  const workingDir = runtime?.workingDir;
+  if (workingDir && workingDir.kind === 'remote') {
+    return skillCmdRunnerExecuteRemote(jsonPayload, runtime);
+  }
+  return skillCmdRunnerExecute(jsonPayload, runtime);
 }
 
 export const ACTION_NAME = "run_command";

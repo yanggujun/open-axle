@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { execSync } from 'child_process';
-import { ExecutionResponse, extractJson, getSequential } from '../../core/executor';
+import { ExecutionResponse, extractJson, getSequential, buildConnectConfig, connect, getSftp, sftpReadFile, sftpWriteFile, sftpMkdir, remoteFileExists, remoteIsInGitRepo, Runtime } from '../../common/common';
+import { Client } from 'ssh2';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -260,7 +261,7 @@ function _wrapResponse(contentJson: string, sequential: any = null, nextPrompt: 
 // Core change-file operation
 // ---------------------------------------------------------------------------
 
-function changeFileFromPayload(payload: string | Record<string, any>, baseDir?: string): ExecutionResponse {
+function changeFileFromPayload(payload: string | Record<string, any>, runtime?: Runtime): ExecutionResponse {
   let data: Record<string, any>;
   try {
     const raw = extractJson(payload) ?? {};
@@ -271,7 +272,7 @@ function changeFileFromPayload(payload: string | Record<string, any>, baseDir?: 
 
   const sequential = data.sequential;
   const prompt = data.prompt;
-  baseDir = baseDir || process.cwd();
+  const baseDir = runtime?.workingDir?.path || process.cwd();
   const targetDir = data.file_path;
 
   let fullDir: string;
@@ -343,16 +344,140 @@ function changeFileFromPayload(payload: string | Record<string, any>, baseDir?: 
 }
 
 // ---------------------------------------------------------------------------
+// Remote (SSH) change-file operation
+// ---------------------------------------------------------------------------
+
+async function changeFileFromPayloadRemote(
+  payload: string | Record<string, any>,
+  runtime?: Runtime
+): Promise<ExecutionResponse> {
+  const baseDir = runtime?.workingDir;
+  const serverName = baseDir?.kind === 'remote' ? baseDir.serverName : '';
+  const remoteBaseDir = baseDir?.path;
+  const server = baseDir?.kind === 'remote' ? baseDir.server : {};
+  let data: Record<string, any>;
+  try {
+    const raw = extractJson(payload) ?? {};
+    data = _normalize(raw);
+  } catch (e: any) {
+    return _wrapResponse(`Invalid payload: ${e.message}`, false, '');
+  }
+
+  const sequential = data.sequential;
+  const prompt = data.prompt;
+
+  if (!serverName) {
+    return _wrapResponse('Missing remote server name for SSH execution.', sequential, prompt);
+  }
+
+  const serverCfg = server;
+  if (!serverCfg) {
+    return _wrapResponse(`No SSH configuration found for server '${serverName}'.`, sequential, prompt);
+  }
+
+  // Resolve the target remote path (the remote host uses POSIX paths).
+  const targetDir = data.file_path;
+  let fullDir: string;
+  if (path.posix.isAbsolute(targetDir)) {
+    fullDir = targetDir;
+  } else {
+    fullDir = path.posix.resolve(remoteBaseDir || '.', targetDir);
+  }
+  const fullPath = path.posix.resolve(fullDir, data.filename);
+
+  const blocked = _isBlockedPath(fullPath);
+  if (blocked) {
+    return _wrapResponse(`Blocked path (contains '${blocked}'); refusing to modify.`, sequential, prompt);
+  }
+
+  const connectConfig = buildConnectConfig(serverName, serverCfg);
+
+  let conn: Client | null = null;
+  try {
+    conn = await connect(connectConfig);
+    const sftp = await getSftp(conn);
+
+    const fileExists = await remoteFileExists(sftp, fullPath);
+    let original = '';
+
+    if (!fileExists) {
+      if (!data.create_if_missing) {
+        return _wrapResponse(`File does not exist: ${fullPath}. Set 'createIfMissing': 'true' to create it.`, sequential, prompt);
+      }
+      await sftpMkdir(sftp, fullDir);
+      original = '';
+    } else {
+      try {
+        original = await sftpReadFile(sftp, fullPath);
+      } catch (e: any) {
+        return _wrapResponse(`Failed to read file: ${e.message}`, sequential, prompt);
+      }
+    }
+
+    // Optional backup (skip when the file is tracked in a remote git repo).
+    if (data.backup && fileExists) {
+      const inGit = await remoteIsInGitRepo(conn, fullDir, fullPath);
+      if (!inGit) {
+        try {
+          const backupContent = await sftpReadFile(sftp, fullPath);
+          await sftpWriteFile(sftp, fullPath + '.bak', backupContent);
+        } catch (e: any) {
+          return _wrapResponse(`Failed to create backup: ${e.message}`, sequential, prompt);
+        }
+      }
+    }
+
+    let newContent: string;
+    try {
+      newContent = _applyOperation(original, data);
+    } catch (e: any) {
+      return _wrapResponse(`Failed to apply operation: ${e.message}`, sequential, prompt);
+    }
+
+    // If nothing changed, short-circuit.
+    if (newContent === original && fileExists) {
+      return _wrapResponse(`No changes applied to ${fullPath} (content identical).`, sequential, prompt);
+    }
+
+    try {
+      await sftpWriteFile(sftp, fullPath, newContent);
+    } catch (e: any) {
+      return _wrapResponse(`Failed to write file: ${e.message}`, sequential, prompt);
+    }
+
+    return _wrapResponse(`Successfully changed file: ${fullPath} (operation=${data.operation})`, sequential, prompt);
+  } catch (e: any) {
+    return _wrapResponse(`Failed to change remote file over SSH: ${e.message}`, sequential, prompt);
+  } finally {
+    if (conn) {
+      try { conn.end(); } catch { /* ignore */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Skill wrapper functions (called by the SkillManager)
 // ---------------------------------------------------------------------------
 
-function skillFileChangerExecute(jsonPayload: string, baseDir: string = ''): ExecutionResponse {
-  return changeFileFromPayload(jsonPayload, baseDir.trim() || undefined);
+function skillFileChangerExecute(jsonPayload: string, runtime?: Runtime): ExecutionResponse {
+  return changeFileFromPayload(jsonPayload, runtime);
 }
 
-export function execute(jsonPayload: string, baseDir: string = ''): ExecutionResponse {
-  return skillFileChangerExecute(jsonPayload, baseDir);
+function skillFileChangerExecuteRemote(
+  jsonPayload: string,
+  runtime?: Runtime
+): Promise<ExecutionResponse> {
+  return changeFileFromPayloadRemote(jsonPayload, runtime);
 }
 
+export function execute(jsonPayload: string, runtime: Runtime): ExecutionResponse | Promise<ExecutionResponse> {
+  // Navigate the Runtime structure: the resolved working directory lives at
+  // runtime.workingDir (kind, serverName, path, server).
+  const workingDir = runtime?.workingDir;
+  if (workingDir && workingDir.kind === 'remote') {
+    return skillFileChangerExecuteRemote(jsonPayload, runtime);
+  }
+  return skillFileChangerExecute(jsonPayload, runtime);
+}
 
 export const ACTION_NAME = "change_file";

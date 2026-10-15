@@ -52,6 +52,14 @@ let panel: HTMLElement | null = null;
 let unsubscribe: (() => void) | null = null;
 let resizeHandler: (() => void) | null = null;
 
+/**
+ * Height (px) chosen by the user via the bottom resize grip. `null` means no
+ * manual resize yet, so the panel follows the measured chat-log height. Once
+ * the user drags the grip this records their choice and applyGeometry()
+ * prefers it (and the live window-resize handler stops overriding it).
+ */
+let manualHeight: number | null = null;
+
 /** Reference to the scrollable log body, used to keep it pinned to the bottom. */
 let bodyEl: HTMLElement | null = null;
 
@@ -111,7 +119,148 @@ function panelHeight(): number {
  */
 function applyGeometry(el: HTMLElement): void {
   el.style.setProperty('--logs-width', panelWidth() + 'px');
-  el.style.setProperty('--logs-height', panelHeight() + 'px');
+  // Once the user has dragged the vertical resize grip, keep their chosen
+  // height instead of re-measuring the chat log on every window resize.
+  el.style.setProperty('--logs-height', (manualHeight !== null ? manualHeight : panelHeight()) + 'px');
+}
+
+/**
+ * Publish the panel's top-left coordinates to the stylesheet. The
+ * `.logs-window` rule reads them via
+ *   top:  var(--logs-top, 48px);
+ *   left: var(--logs-left, calc(100vw - var(--logs-width, 33vw) - 16px));
+ * Keeping the position in custom properties (instead of inline left/top)
+ * means the CSS stays the single source of truth for the panel's look while
+ * the drag handler only moves it around. The element remains
+ * `position: fixed` with z-index 9000, so it keeps floating above the main
+ * window (always-on-top) wherever it is dragged.
+ */
+function applyPosition(el: HTMLElement, left: number, top: number): void {
+  el.style.setProperty('--logs-left', left + 'px');
+  el.style.setProperty('--logs-top', top + 'px');
+}
+
+/**
+ * Make a floating panel movable by dragging `handle` (its header).
+ *
+ * Implementation notes:
+ *   - the move is driven by mousemove on `window`, so the pointer can leave
+ *     the header (or even the panel) mid-drag without dropping the gesture;
+ *   - the grab offset keeps the panel from jumping so it continues to track
+ *     the cursor exactly;
+ *   - the coordinates are clamped so at least part of the panel always stays
+ *     on screen;
+ *   - a drag that starts on the close (x) button is ignored so clicking it
+ *     still closes the panel;
+ *   - text selection is disabled for the duration of the drag.
+ */
+function makeDraggable(el: HTMLElement, handle: HTMLElement): void {
+  let startX = 0;
+  let startY = 0;
+  let startLeft = 0;
+  let startTop = 0;
+  let dragging = false;
+
+  const onMove = (ev: MouseEvent): void => {
+    if (!dragging) {
+      return;
+    }
+    const nextLeft = startLeft + (ev.clientX - startX);
+    const nextTop = startTop + (ev.clientY - startY);
+
+    // Keep at least a sliver of the panel within the viewport.
+    const maxLeft = window.innerWidth - 40;
+    const maxTop = window.innerHeight - 40;
+    applyPosition(el, Math.min(Math.max(nextLeft, 0), maxLeft), Math.min(Math.max(nextTop, 0), maxTop));
+  };
+
+  const onUp = (): void => {
+    if (!dragging) {
+      return;
+    }
+    dragging = false;
+    document.body.style.userSelect = '';
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+
+  handle.addEventListener('mousedown', (ev: MouseEvent) => {
+    // Let the close (x) button handle its own clicks.
+    if ((ev.target as HTMLElement).closest('.logs-window-close')) {
+      return;
+    }
+    // Left button only.
+    if (ev.button !== 0) {
+      return;
+    }
+
+    const rect = el.getBoundingClientRect();
+    startX = ev.clientX;
+    startY = ev.clientY;
+    startLeft = rect.left;
+    startTop = rect.top;
+    dragging = true;
+
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+
+    ev.preventDefault();
+  });
+}
+
+/**
+ * Make a floating panel vertically resizable by dragging `handle` (the
+ * bottom-edge grip). Only the height is affected: it updates the
+ * --logs-height custom property and records the choice in `manualHeight`, so
+ * the width (--logs-width) and every other aspect of the panel are untouched.
+ *
+ * As with makeDraggable, the gesture runs on window-level mousemove/mouseup so
+ * it survives the pointer leaving the grip, non-left buttons are ignored, and
+ * text selection is suppressed for the duration of the drag. The height is
+ * clamped so the panel cannot collapse or grow past the viewport.
+ */
+function makeResizable(el: HTMLElement, handle: HTMLElement): void {
+  let startY = 0;
+  let startHeight = 0;
+  let resizing = false;
+
+  const onMove = (ev: MouseEvent): void => {
+    if (!resizing) {
+      return;
+    }
+    const nextHeight = startHeight + (ev.clientY - startY);
+    const clamped = Math.min(Math.max(nextHeight, 120), window.innerHeight - 40);
+    manualHeight = clamped;
+    el.style.setProperty('--logs-height', clamped + 'px');
+  };
+
+  const onUp = (): void => {
+    if (!resizing) {
+      return;
+    }
+    resizing = false;
+    document.body.style.userSelect = '';
+    window.removeEventListener('mousemove', onMove);
+    window.removeEventListener('mouseup', onUp);
+  };
+
+  handle.addEventListener('mousedown', (ev: MouseEvent) => {
+    if (ev.button !== 0) {
+      return;
+    }
+
+    const rect = el.getBoundingClientRect();
+    startY = ev.clientY;
+    startHeight = rect.height;
+    resizing = true;
+
+    document.body.style.userSelect = 'none';
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+
+    ev.preventDefault();
+  });
 }
 
 /** Remove the panel and release every resource. */
@@ -137,6 +286,10 @@ function closeLogsWindow(): void {
     panel = null;
   }
   bodyEl = null;
+
+  // Forget any user-chosen height so the next open starts from the measured
+  // chat-log height again.
+  manualHeight = null;
 }
 
 /**
@@ -185,9 +338,27 @@ export function openLogsWindow(): void {
   bodyEl = document.createElement('div');
   bodyEl.className = 'logs-window-body';
 
+  // ---- Bottom-edge grip: makes the panel vertically resizable ----
+  // Styled by `.logs-window-resize` in src/styles.css. Dragging it changes
+  // only the panel height (--logs-height); the width is left untouched.
+  const resizeHandle = document.createElement('div');
+  resizeHandle.className = 'logs-window-resize';
+  resizeHandle.title = 'Drag to resize';
+
   panel.appendChild(header);
   panel.appendChild(bodyEl);
+  panel.appendChild(resizeHandle);
   document.body.appendChild(panel);
+
+  // Seed the initial position at the original top-right spot (matching the
+  // old CSS `top: 48px; right: 16px;`) and make the header a drag handle so
+  // the user can move the panel anywhere. The panel stays `position: fixed`
+  // with a high z-index, so it keeps floating above the main window.
+  applyPosition(panel, window.innerWidth - panelWidth() - 16, 48);
+  makeDraggable(panel, header);
+
+  // Enable vertical resizing via the bottom grip.
+  makeResizable(panel, resizeHandle);
 
   // Keep the panel sized like the chat log while the window is resized. Only
   // re-pin to the bottom when the user was already following the tail.

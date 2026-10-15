@@ -5,7 +5,8 @@ import { QueuedConduit, Protocol } from './core/conduit';
 import { LlmConfig, ModelConfig } from './core/config';
 import { logger } from './core/logger';
 import { Tail } from './core/tail';
-import { getRemoteServers, getSkillConfig } from './core/executor';
+import { getRemoteServers } from './core/executor';
+import { getSkillConfig, parsePath } from './core/config';
 import { execFile } from 'child_process';
 
 // Webpack entry points (defined by electron-forge's webpack plugin)
@@ -183,10 +184,10 @@ function registerIpc(): void {
     agent?.clear();
   });
 
-  ipcMain.handle('axle:cd', (_e, dir: string, modelName?: string) => {
+  ipcMain.handle('axle:cd', async (_e, dir: string, modelName?: string) => {
     const agent = resolveAgent(modelName);
     if (agent) {
-      agent.cd(dir);
+      await agent.cd(dir);
     }
     return true;
   });
@@ -204,7 +205,14 @@ function registerIpc(): void {
 
   ipcMain.handle('axle:validateDir', (_e, dir: string) => {
     try {
-      const ok = fs.existsSync(dir) && fs.statSync(dir).isDirectory();
+      // Remote (ssh://) paths do not exist on the local filesystem, so a local
+      // fs check would always fail. Treat remote paths as valid here; the
+      // remote tab validates them by listing the directory over SSH instead.
+      const parsed = parsePath(dir);
+      if (parsed.kind === 'remote') {
+        return true;
+      }
+      const ok = fs.existsSync(parsed.path) && fs.statSync(parsed.path).isDirectory();
       if (!ok) {
         dialog.showErrorBox('Error', 'Invalid Directory!');
       }
@@ -224,7 +232,15 @@ function registerIpc(): void {
   ipcMain.handle('axle:listDir', (_e, dir: string) => {
     try {
       if (!dir) return [];
-      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      // Remote (ssh://) paths are not on the local filesystem. Do NOT attempt
+      // fs.readdirSync on them (that is what produced
+      // "ENOENT: no such file or directory, scandir 'ssh://...'"). The remote
+      // tab browses these via 'axle:listRemoteDir' over SSH instead.
+      const parsed = parsePath(dir);
+      if (parsed.kind === 'remote') {
+        return [];
+      }
+      const entries = fs.readdirSync(parsed.path, { withFileTypes: true });
       const dirs = entries.filter(e => e.isDirectory()).map(e => e.name);
       return dirs;
     } catch (error) {
@@ -240,6 +256,32 @@ function registerIpc(): void {
       return cfg.getWorkingDir(modelName) ?? process.cwd();
     } catch {
       return '';
+    }
+  });
+
+  // Classify a model's persisted working directory as 'remote' or 'local'.
+  // The folder-selection dialog calls this when it opens so it can show the
+  // LOCAL tab for a local working dir and the REMOTE tab for an ssh:// one.
+  //
+  // Returns a serializable descriptor (the resolved `server` config object is
+  // intentionally dropped; the renderer only needs the kind/serverName/path):
+  //   { kind: 'remote', serverName: string, path: string }  or
+  //   { kind: 'local',  path: string }
+  ipcMain.handle('axle:getWorkingDirInfo', (_e, modelName?: string) => {
+    let workingDir: string;
+    try {
+      const cfg = new LlmConfig();
+      workingDir = (modelName ? cfg.getWorkingDir(modelName) : undefined) ?? process.cwd();
+    } catch {
+      workingDir = process.cwd();
+    }
+
+    try {
+      const parsed = parsePath(workingDir);
+      return parsed;
+    } catch {
+      // Unparseable/empty working dir -> treat as local cwd.
+      return { kind: 'local', path: process.cwd() };
     }
   });
 

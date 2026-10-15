@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { ExecutionResponse, extractJson, getSequential } from '../../core/executor';
+import { Runtime, ExecutionResponse, extractJson, getSequential, buildConnectConfig, connect, execCommand, shellQuote } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -243,16 +243,16 @@ function _wrapResponse(contentJson: string, sequential: any = null, nextPrompt: 
   return new ExecutionResponse(contentJson, nextPrompt, sequential, true);
 }
 
-function grepFromPayload(payload: string | Record<string, any>, baseDir?: string): ExecutionResponse {
+function grepFromPayload(payload: string | Record<string, any>, runtime?: Runtime): ExecutionResponse {
   let data: Record<string, any>;
   try {
     const raw = extractJson(payload) ?? {};
     data = _normalize(raw);
   } catch (e: any) {
-    return _wrapResponse(_errorContentJson(`Invalid payload: ${e.message}`));
+    return _wrapResponse(_errorContentJson(`Invalid payload: ${e.message}`), true);
   }
 
-  baseDir = baseDir || process.cwd();
+  const baseDir = runtime?.workingDir?.path || process.cwd();
   const target = data.path;
   const root = path.isAbsolute(target) ? target : path.resolve(baseDir, target);
 
@@ -321,15 +321,127 @@ function grepFromPayload(payload: string | Record<string, any>, baseDir?: string
 }
 
 // ---------------------------------------------------------------------------
+// Remote (SSH) grep-file operation
+// ---------------------------------------------------------------------------
+
+async function grepFromPayloadRemote(
+  payload: string | Record<string, any>,
+  runtime?: Runtime
+): Promise<ExecutionResponse> {
+  let data: Record<string, any>;
+  const baseDir = runtime?.workingDir;
+  const serverName = baseDir?.kind === 'remote' ? baseDir.serverName : '';
+  const remoteBaseDir = baseDir?.path;
+  const server = baseDir?.kind === 'remote' ? baseDir.server : {};
+  try {
+    const raw = extractJson(payload) ?? {};
+    data = _normalize(raw);
+  } catch (e: any) {
+    return _wrapResponse(_errorContentJson(`Invalid payload: ${e.message}`), true);
+  }
+
+  if (!serverName) {
+    return _wrapResponse(_errorContentJson('Missing remote server name for SSH execution.'), data.sequential, data.prompt);
+  }
+
+  // Resolve the remote search root (the remote host uses POSIX paths).
+  const target = data.path;
+  const root = path.posix.isAbsolute(target) ? target : path.posix.resolve(remoteBaseDir || '.', target);
+
+  const blocked = _isBlockedPath(root);
+  if (blocked) {
+    return _wrapResponse(
+      _errorContentJson(`Blocked path (contains '${blocked}'); refusing to search.`),
+      data.sequential,
+      data.prompt
+    );
+  }
+
+  const serverCfg = server;
+  if (!serverCfg) {
+    return _wrapResponse(`No SSH configuration found for server '${serverName}'.`, data.sequential, data.prompt);
+  }
+
+  const connectConfig = buildConnectConfig(serverName, serverCfg);
+
+  // Build grep flags.
+  const recFlag = data.recursive ? '-r' : '-d skip';
+  const regexFlag = data.is_regex ? '-E' : '-F';
+  const caseFlag = data.case_sensitive ? '' : '-i';
+  const lineFlag = '-n';
+  const includeFlag =
+    data.include_glob && data.include_glob !== '*'
+      ? `--include=${shellQuote(data.include_glob)}`
+      : '';
+  const excludeFlags = (data.excludes || [])
+    .map((e: string) => `--exclude-dir=${shellQuote(e)}`)
+    .join(' ');
+
+  let conn = null as any;
+  try {
+    conn = await connect(connectConfig);
+
+    const cmd =
+      `grep ${recFlag} ${regexFlag} ${caseFlag} ${lineFlag} ${includeFlag} ${excludeFlags} ` +
+      `-- ${shellQuote(data.pattern)} ${shellQuote(root)} 2>/dev/null`;
+    const { stdout } = await execCommand(conn, cmd);
+
+    // Parse output lines: '<path>:<lineno>:<text>' (with -n). Collect unique paths.
+    const matchedFiles: string[] = [];
+    const seen = new Set<string>();
+    const lines = stdout.split(/\r?\n/);
+    for (const line of lines) {
+      if (!line) continue;
+      const m = /^(.*?):(\d+):/.exec(line);
+      const fpath = m ? m[1] : line.split(':')[0];
+      if (!fpath || seen.has(fpath)) continue;
+      seen.add(fpath);
+      matchedFiles.push(fpath);
+      if (matchedFiles.length >= data.max_results) break;
+    }
+
+    if (matchedFiles.length === 0) {
+      return _wrapResponse('No file is found', data.sequential);
+    }
+
+    const files = matchedFiles.join('\n') + '\n';
+    return _wrapResponse(files, data.sequential, data.prompt);
+  } catch (e: any) {
+    return _wrapResponse(_errorContentJson(`Failed to grep remote files over SSH: ${e.message}`), data.sequential, data.prompt);
+  } finally {
+    if (conn) {
+      try { conn.end(); } catch { /* ignore */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Skill wrapper functions (called by the SkillManager)
 // ---------------------------------------------------------------------------
 
-function skillFileGrepExecute(jsonPayload: string, baseDir: string = ''): ExecutionResponse {
-  return grepFromPayload(jsonPayload, baseDir.trim() || undefined);
+function skillFileGrepExecute(jsonPayload: string, runtime?: Runtime): ExecutionResponse {
+  return grepFromPayload(jsonPayload, runtime);
 }
 
-export function execute(jsonPayload: string, baseDir: string = ''): ExecutionResponse {
-  return skillFileGrepExecute(jsonPayload, baseDir);
+/**
+ * New entry point: grep files on a remote host over SSH. Mirrors
+ * skillFileGrepExecute but targets the configured remote server.
+ */
+function skillFileGrepExecuteRemote(
+  jsonPayload: string,
+  runtime?: Runtime
+): Promise<ExecutionResponse> {
+  return grepFromPayloadRemote(jsonPayload, runtime);
+}
+
+export function execute(jsonPayload: string, runtime: Runtime): ExecutionResponse | Promise<ExecutionResponse> {
+  // Navigate the Runtime structure: the resolved working directory lives at
+  // runtime.workingDir (kind, serverName, path, server).
+  const workingDir = runtime?.workingDir;
+  if (workingDir && workingDir.kind === 'remote') {
+    return skillFileGrepExecuteRemote(jsonPayload, runtime);
+  }
+  return skillFileGrepExecute(jsonPayload, runtime);
 }
 
 export const ACTION_NAME = "grep_file";

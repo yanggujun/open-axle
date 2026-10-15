@@ -158,6 +158,6 @@ describe('JsonParser', () => {
     const parser = new JsonParser();
 
     parser.parse(json);
-    expect(parser.getTextType()).toBe(TextType.MALFORMATED_JSON);
+    expect(parser.getTextType()).toBe(TextType.TRAILING_JSON);
   });
 });

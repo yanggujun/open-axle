@@ -1,7 +1,7 @@
 import * as http from 'http';
 import * as https from 'https';
 import { URL } from 'url';
-import { ExecutionResponse, extractJson, getSequential, getSkillConfig } from '../../core/executor';
+import { ExecutionResponse, extractJson, getSequential, Runtime } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -42,10 +42,10 @@ const ALLOWED_METHODS = ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'HEAD', 'OPTIO
 const MAX_OUTPUT_SIZE = 1024 * 1024; // 1MB max
 
 // ---------------------------------------------------------------------------
-// Config resolution (curl authentication via getSkillConfig)
+// Config resolution (curl authentication via runtime.fullSkillConfig)
 // ---------------------------------------------------------------------------
 
-function _resolveAuthFromConfig(url: string): string | null {
+function _resolveAuthFromConfig(url: string, runtime?: Runtime): string | null {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -54,7 +54,14 @@ function _resolveAuthFromConfig(url: string): string | null {
   }
 
   const host = parsed.hostname.toLowerCase();
-  const config = getSkillConfig('curl', host);
+  if (!runtime) {
+    throw new Error("Runtime is not available.");
+  }
+  // Resolve the curl auth config from ALL skill configs carried by the
+  // Runtime (instead of re-reading .skill.config via getSkillConfig).
+  const skillEntry = (runtime.fullSkillConfig?.skill_configs ?? []).find(entry => entry.skill === 'curl');
+  const configItem = (skillEntry?.config_items ?? []).find(item => item.name === host);
+  const config = configItem?.value ?? {};
   const authString = config?.auth_string;
   if (authString) {
     const trimmed = authString.trim().replace(/^\s+/, '');
@@ -128,7 +135,7 @@ function _toBool(value: any, def: boolean): boolean {
   return def;
 }
 
-function _normalize(payload: Record<string, any>): Record<string, any> {
+function _normalize(payload: Record<string, any>, runtime?: Runtime): Record<string, any> {
   const action = payload.action ?? 'curl';
   const [sequential, nextPromptRaw] = getSequential(payload);
 
@@ -193,7 +200,7 @@ function _normalize(payload: Record<string, any>): Record<string, any> {
   // Resolve authentication: explicit auth takes precedence, otherwise use config.
   let resolvedAuth = auth;
   if (!resolvedAuth) {
-    const configAuth = _resolveAuthFromConfig(url);
+    const configAuth = _resolveAuthFromConfig(url, runtime);
     if (configAuth) {
       resolvedAuth = configAuth;
     }
@@ -340,11 +347,11 @@ async function _performRequest(data: Record<string, any>): Promise<{ status: num
   });
 }
 
-async function runCurlFromPayload(payload: string | Record<string, any>): Promise<ExecutionResponse | string> {
+async function runCurlFromPayload(payload: string | Record<string, any>, runtime?: Runtime): Promise<ExecutionResponse | string> {
   let data: Record<string, any>;
   try {
     const raw = extractJson(payload) ?? {};
-    data = _normalize(raw);
+    data = _normalize(raw, runtime);
   } catch (e: any) {
     return `Invalid payload: ${e.message}`;
   }
@@ -380,12 +387,12 @@ async function runCurlFromPayload(payload: string | Record<string, any>): Promis
 // Skill wrapper functions (called by the SkillManager)
 // ---------------------------------------------------------------------------
 
-function skillCurlExecute(jsonPayload: string): Promise<ExecutionResponse | string> {
-  return runCurlFromPayload(jsonPayload);
+function skillCurlExecute(jsonPayload: string, runtime: Runtime): Promise<ExecutionResponse | string> {
+  return runCurlFromPayload(jsonPayload, runtime);
 }
 
-export function execute(jsonPayload: string): Promise<ExecutionResponse | string> {
-  return skillCurlExecute(jsonPayload);
+export function execute(jsonPayload: string, runtime: Runtime): Promise<ExecutionResponse | string> {
+  return skillCurlExecute(jsonPayload, runtime);
 }
 
 export const ACTION_NAME = "curl";

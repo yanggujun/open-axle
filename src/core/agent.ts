@@ -1,18 +1,35 @@
 import { Conduit } from './conduit';
 import { Model, ConversationMessage } from './model';
-import { ExecutionResponse, discoverExecutors, validate, ExecutorMap, parseActionJson, extractJson } from './executor';
+import { discoverExecutors, validate, ExecutorMap, parseActionJson } from './executor';
+import { extractJson } from '../common/common';
+import { ExecutionResponse } from '../common/common';
+import { getFullWorkingPath, getFullSkillConfig, parsePath } from './config';
+import { Runtime } from '../common/common';
+import { WorkingDir } from '../common/common';
 import { TextType } from './parser';
 import {logger} from './logger';
 import { ModelConfig } from './config';
+import { AxlePrompt } from './prompt';
+
 
 export class AxleAgent {
   modelName: string;
   skillsFolder: string;
   model: Model;
+  prompt: AxlePrompt;
   executors: Promise<ExecutorMap>;
   conversationHistory: ConversationMessage[] = [];
-  baseDir: string;
   conduit: Conduit;
+  /**
+   * Cached parsed representation of the current working directory. It is a
+   * `WorkingDir` describing either a local path or a remote `ssh://` location
+   * (including the resolved server config under `server`). It is refreshed on
+   * every {@link AxleAgent.cd} call and is `null` until the first cd. `baseDir`
+   * is kept in sync as the string form of this value.
+   */
+  private workingDir: WorkingDir | undefined;
+  /** Cached {@link Runtime} context built by {@link AxleAgent.buildRuntime}. */
+  private runtime: Runtime | undefined;
   /** Set to true to request the running continuous task loop to stop. */
   private _stopRequested = false;
 
@@ -22,11 +39,12 @@ export class AxleAgent {
   ) {
     this.modelName = modelConfig.model;
     this.skillsFolder = modelConfig.skillsFolder ?? "skills";
+    this.prompt = new AxlePrompt(this.skillsFolder);
     this.model = new Model(
       modelConfig.key,
       modelConfig.url,
       modelConfig.model,
-      this.skillsFolder,
+      this.prompt,
       undefined,
       undefined,
       modelConfig.responses ?? false,
@@ -35,17 +53,72 @@ export class AxleAgent {
     logger.log(`starting ${this.modelName}`);
     this.executors = discoverExecutors(this.skillsFolder);
     this.conversationHistory = [];
-    this.baseDir = modelConfig.workingDir ?? process.cwd();
     this.conduit = conduit;
+    const baseDir = modelConfig.workingDir ?? process.cwd();
+    this.cd(baseDir);
   }
 
-  cd(dir: string): void {
-    this.baseDir = dir;
-    this.conduit.send(`Working directory changed to: ${this.baseDir}`);
+  /**
+   * Builds the agent's {@link Runtime} context. The Runtime combines the
+   * resolved {@link WorkingDir} (a local path or a remote `ssh://` location,
+   * including its server config) with the full skill config returned by
+   * {@link getFullSkillConfig} — ALL skill configs from `.skill.config`
+   * (every skill entry with all of its `config_items`), not just a single
+   * resolved config item. The result is cached in `this.runtime`. Returns
+   * (and caches) `null` when the working directory is not yet set, i.e. when
+   * cd has not been called yet.
+   */
+  buildRuntime(): void {
+    if (this.workingDir) {
+      this.runtime = { workingDir: this.workingDir, fullSkillConfig: getFullSkillConfig() };
+    }
+  }
+
+  async cd(dir: string): Promise<void> {
+    // parsePath resolves the remote server config (ssh -> scp fallback)
+    // internally, so the returned WorkingDir is fully self-describing.
+    const parsed = parsePath(dir);
+    if (parsed.kind === 'remote') {
+      // Encode the remote location into a normalized `ssh://<serverName><path>`
+      // form so downstream consumers can detect the remote context consistently.
+      if (parsed.server) {
+        this.workingDir = parsed;
+        await this.prompt.buildOsPrompt(parsed);
+        logger.log(`Working directory changed to remote server '${parsed.serverName}' at '${parsed.path}' (config resolved)`);
+        this.conduit.send(`Working directory changed to remote: ${parsed.serverName}:${parsed.path}`);
+      } else {
+        logger.log(`Working directory changed to remote server '${parsed.serverName}' at '${parsed.path}' but no 'ssh'/'scp' config was found`);
+        this.conduit.send(`Working directory changed to remote: ${parsed.serverName}:${parsed.path} (warning: no matching server configuration found)`);
+      }
+    } else {
+      this.workingDir = parsed;
+      await this.prompt.buildOsPrompt(parsed);
+      logger.log(`Working directory changed to local path '${parsed.path}'`);
+      this.conduit.send(`Working directory changed to: ${parsed.path}`);
+    }
+    this.buildRuntime();
   }
 
   getCwd(): string{
-    return this.baseDir;
+    return getFullWorkingPath(this.workingDir);
+  }
+
+  /**
+   * Expose the cached remote server configuration for the current working
+   * directory. Returns the resolved skill-config `value` object when the
+   * working directory is a remote `ssh://` location with a matching 'ssh'/
+   * 'scp' skill config, or `null` for local paths / unresolved servers.
+   */
+  getRemoteConfig(): Record<string, string> | null {
+    return this.workingDir && this.workingDir.kind === 'remote' ? this.workingDir.server : null;
+  }
+
+  /**
+   * Expose the full cached {@link WorkingDir} describing the current working
+   * directory (local or remote), or `null` if cd has not been called yet.
+   */
+  getWorkingDir(): WorkingDir | null {
+    return this.workingDir ?? null;
   }
 
   /**
@@ -70,7 +143,7 @@ export class AxleAgent {
   }
 
   reload(): void {
-    this.model.reloadSkills();
+    this.prompt.reloadSkills();
     this.conversationHistory = [];
     this.conduit.send('\nSkills reloaded and conversation reset.\n');
   }
@@ -82,7 +155,7 @@ export class AxleAgent {
   }
 
   getSkills(): string {
-    const skills = this.model.getSkillsSummary();
+    const skills = this.prompt.getSkillsSummary();
     this.conduit.send(skills);
     return skills;
   }
@@ -200,7 +273,7 @@ export class AxleAgent {
       logger.log(`find executor for action ${action}`)
       this.conduit.send(`Executing ${action}...`);
       const executor = executors[action];
-      const response: ExecutionResponse = await executor(jsonPayload, this.baseDir)
+      const response: ExecutionResponse = await executor(jsonPayload, this.runtime)
       return response;
     } else {
       logger.log('no action is defined');

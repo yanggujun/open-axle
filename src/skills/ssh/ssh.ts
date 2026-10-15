@@ -1,7 +1,6 @@
 import * as fs from 'fs';
-import * as path from 'path';
 import { Client, ConnectConfig } from 'ssh2';
-import { ExecutionResponse, extractJson, getSequential, getSkillConfig } from '../../core/executor';
+import { Runtime, ExecutionResponse, extractJson, getSequential } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -357,7 +356,7 @@ function _finalize(out: string, data: Record<string, any>): ExecutionResponse {
   return new ExecutionResponse(out, data.prompt, seq, !seq, 'json');
 }
 
-async function runSshFromPayload(payload: string | Record<string, any>, baseDir?: string): Promise<ExecutionResponse | string> {
+async function runSshFromPayload(payload: string | Record<string, any>, runtime?: Runtime): Promise<ExecutionResponse | string> {
   let data: Record<string, any>;
   try {
     const raw = extractJson(payload) ?? {};
@@ -366,11 +365,16 @@ async function runSshFromPayload(payload: string | Record<string, any>, baseDir?
     return `Invalid payload: ${e.message}`;
   }
 
-  baseDir = baseDir || process.cwd();
-
   let config: Record<string, string>;
   try {
-    config = getSkillConfig('ssh', data.host);
+    if (!runtime) {
+      throw new Error("Runtime is not available.");
+    }
+    // Resolve the host config from ALL skill configs carried by the Runtime
+    // (instead of re-reading .skill.config via getSkillConfig).
+    const skillEntry = (runtime.fullSkillConfig?.skill_configs ?? []).find(entry => entry.skill === 'ssh');
+    const configItem = (skillEntry?.config_items ?? []).find(item => item.name === data.host);
+    config = configItem?.value ?? {};
   } catch (e: any) {
     return `Configuration error: ${e.message}`;
   }
@@ -416,12 +420,12 @@ async function runSshFromPayload(payload: string | Record<string, any>, baseDir?
 // Skill wrapper functions (called by the SkillManager)
 // ---------------------------------------------------------------------------
 
-function skillSshExecute(jsonPayload: string, baseDir: string = ''): Promise<ExecutionResponse | string> {
-  return runSshFromPayload(jsonPayload, baseDir.trim() || undefined);
+function skillSshExecute(jsonPayload: string, runtime: Runtime): Promise<ExecutionResponse | string> {
+  return runSshFromPayload(jsonPayload, runtime);
 }
 
-export function execute(jsonPayload: string, baseDir: string = ''): Promise<ExecutionResponse | string> {
-  return skillSshExecute(jsonPayload, baseDir);
+export function execute(jsonPayload: string, runtime: Runtime): Promise<ExecutionResponse | string> {
+  return skillSshExecute(jsonPayload, runtime);
 }
 
 export const ACTION_NAME = "ssh";

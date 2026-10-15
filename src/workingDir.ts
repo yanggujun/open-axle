@@ -142,6 +142,10 @@ export function openFolderChooser(modelName: string): Promise<string | null> {
   // activeTab tracks which tab ('local' | 'remote') drives the footer action.
   let activeTab: 'local' | 'remote' = 'local';
   let remoteServersLoaded = false;
+  // In-flight cache for the remote-server list so concurrent callers (the tab
+  // click and the dialog-open initialization) share ONE fetch instead of
+  // clearing and repopulating the drop-down twice.
+  let remoteServersPromise: Promise<void> | null = null;
 
   function showTab(tab: 'local' | 'remote'): void {
     activeTab = tab;
@@ -161,7 +165,23 @@ export function openFolderChooser(modelName: string): Promise<string | null> {
     }
   }
 
-  async function loadRemoteServers(): Promise<void> {
+  // Load (once) the configured remote servers into the drop-down. Reuses an
+  // in-flight promise so concurrent callers do not repopulate the list twice.
+  function loadRemoteServers(): Promise<void> {
+    if (remoteServersLoaded) {
+      return Promise.resolve();
+    }
+    if (!remoteServersPromise) {
+      remoteServersPromise = doLoadRemoteServers().finally(() => {
+        // Allow a retry on failure; on success `remoteServersLoaded` is true
+        // and the guard above short-circuits future calls.
+        remoteServersPromise = null;
+      });
+    }
+    return remoteServersPromise;
+  }
+
+  async function doLoadRemoteServers(): Promise<void> {
     remoteSelect.innerHTML = '';
 
     let servers: RemoteServer[] = [];
@@ -332,18 +352,19 @@ export function openFolderChooser(modelName: string): Promise<string | null> {
     cancelBtn.addEventListener('click', () => { cleanup(); resolve(null); });
     selectBtn.addEventListener('click', () => {
       if (activeTab === 'remote') {
-        const server = remoteSelect.value;
+        let server = remoteSelect.value;
         if (!server) return;
-        // Signal a remote-server selection using a 'remote://<name>' marker so
+        server = server.replace(/\/$/, '');
+        // Signal a remote-server selection using a 'ssh://<name>' marker so
         // the caller can distinguish it from a local filesystem path.
         cleanup();
-        resolve('remote://' + server);
-        return;
+        resolve('ssh://' + server + '/' + remoteCurrentPath);
+      } else {
+        if (!currentPath) return;
+        const chosen = currentPath;
+        cleanup();
+        resolve(chosen);
       }
-      if (!currentPath) return;
-      const chosen = currentPath;
-      cleanup();
-      resolve(chosen);
     });
 
     // Clicking the backdrop (outside the dialog box) cancels the modal.
@@ -354,7 +375,81 @@ export function openFolderChooser(modelName: string): Promise<string | null> {
       }
     });
 
-    // Start browsing from the default working dir.
-    window.axle.getWorkingDir(modelName).then(loadDir);
+    // Initialise the dialog from the model's persisted working directory.
+    //
+    // 1) ALWAYS seed the LOCAL pane from the app's local working directory
+    //    (process.cwd(), via getDefaultDir; fall back to a non-ssh
+    //    getWorkingDir) so the Local tab stays usable even when the current
+    //    working dir is remote.
+    // 2) Ask the main process how to classify that dir (parsePath):
+    //    remote  -> open the Remote tab and browse the ssh:// path;
+    //    local   -> open the Local tab and browse that path.
+    (async () => {
+      // --- Seed the LOCAL pane (independent of the active working dir) ---
+      let localSeed = '';
+      try {
+        localSeed = await window.axle.getDefaultDir();
+      } catch {
+        localSeed = '';
+      }
+      if (!localSeed) {
+        try {
+          const wd = await window.axle.getWorkingDir(modelName);
+          // Only use it as a local seed when it is NOT an ssh:// path.
+          if (wd && !/^ssh:\/\//i.test(wd)) localSeed = wd;
+        } catch {
+          localSeed = '';
+        }
+      }
+
+      // --- Classify the persisted working dir (remote vs local) ---
+      let info:
+        | { kind: 'remote'; serverName: string; path: string }
+        | { kind: 'local'; path: string }
+        | null = null;
+      try {
+        info = await window.axle.getWorkingDirInfo(modelName);
+      } catch (e) {
+        console.error('Failed to classify working dir:', e);
+        info = null;
+      }
+
+      if (info && info.kind === 'remote') {
+        const serverName = info.serverName;
+        const remotePath = info.path;
+
+        // Open the Remote tab and make sure the server list is populated.
+        showTab('remote');
+        await loadRemoteServers();
+
+        // Ensure the server appears in the drop-down and is selected. If it is
+        // not among the configured servers, inject it so the path is usable.
+        if (serverName) {
+          const hasOption = Array.from(remoteSelect.options).some((o) => o.value === serverName);
+          if (!hasOption) {
+            const opt = document.createElement('option');
+            opt.value = serverName;
+            opt.textContent = serverName;
+            remoteSelect.appendChild(opt);
+          }
+          remoteSelect.disabled = false;
+          remoteSelect.value = serverName;
+        }
+
+        // Seed the Local pane anyway so switching to Local works immediately.
+        if (localSeed) loadDir(localSeed);
+
+        // Browse the remote working dir (a '/' path browses from the root).
+        if (remoteSelect.value) {
+          await loadRemoteDir(remotePath || '');
+        }
+        return;
+      }
+
+      // Local (or unknown/unparseable) -> open the Local tab and browse.
+      showTab('local');
+      const seed = info && info.kind === 'local' && info.path ? info.path : localSeed;
+      if (seed) loadDir(seed);
+    })();
   });
 }

@@ -17,41 +17,22 @@ The agent is well tested with deepseek-v4-flash.
 
 Checkout the code into local
 
-### Start CLI
+### Start GUI
 ```bash
+npm run build
+npm start
 ```
 
-### Start GUI
-## Configuration
-
-Copy `.env.sample` to `.env` and set the required environment variables:
-
-- `API_KEY` — your API key (required)
-- `BASE_URL` — API base URL (e.g., `https://api.openai.com/v1/chat/completions`)
-- `MODEL_NAME` — model identifier to use
-- `SKILLS_FOLDER` — path to the skills folder (default: `skills`)
-- `RESPONSES_API` — set to `TRUE` to use the Responses API
-
-Copy `.axle.sample` to `.axle` to configure skill-specific settings (database connections, API auth, etc.).
-
-## Commands
-
-- Type your message to chat with the agent
-- `skills` — list all loaded skills
-- `set pwd <path>` — set the default working directory
-- `reload` — reload skills and reset conversation
-- `clear` — clear conversation history
-- `quit`, `exit`, or `q` — exit the agent
-
-### Sample Prompt
+## Sample Prompt
 
  - Find method "aComplexMethod", explain the usage of parameter "abc".
  - SSH to "myRemoteServer", in folder $HOME/Downloads, find file *abc.tar.gz, and extract the content into folder abc
  - From database "myDevDB", get the first 10 records of table "PERSON" order by ID descending, and save the content into person.csv in csv format
  - CURL to API "https://mydomain.com/rest/some/api", analyse the result to find some data.
 
-Configuration in .axle file in the same directory
+Configures SKILLs configurations in .axle folder in the user home:
 
+.skill.config
 ``` JSON
 
 {
@@ -87,7 +68,7 @@ Configuration in .axle file in the same directory
             "skill": "ssh",
             "config_items": [
                 {
-                    "name": "devserver",
+                    "name": "myRemoteServer",
                     "value": {
                         "host": "host address",
                         "port": "22",
@@ -117,19 +98,11 @@ skills/
 The `SKILL.md` file is used as context for the LLM. Python files with `@AxleExecutor` decorated functions are discoverable as executable skills.
 
 ## TODO
-- Show thinking trace
-
-- read file to md code format
-
 - multi-agents
 
 - open website in the workzone
 
 - grep return matched line
-
-- support to extract JSON response between random text.
-
-- current remote dir ssh
 
 - open binary files, word, excel, ppt, pdf...
 

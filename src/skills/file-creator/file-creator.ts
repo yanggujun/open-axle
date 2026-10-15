@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { ExecutionResponse, extractJson, getSequential } from '../../core/executor';
+import { Runtime, ExecutionResponse, extractJson, getSequential, buildConnectConfig, connect, getSftp, sftpMkdir, sftpWriteFile, remoteFileExists } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -92,7 +92,7 @@ function _normalize(payload: Record<string, any>): Record<string, any> {
 // Core create-file operation
 // ---------------------------------------------------------------------------
 
-function createFileFromPayload(payload: string | Record<string, any>, baseDir?: string): ExecutionResponse | string {
+function createFileFromPayload(payload: string | Record<string, any>, runtime?: Runtime): ExecutionResponse | string {
   let data: Record<string, any>;
   try {
     const raw = extractJson(payload) ?? {};
@@ -101,7 +101,7 @@ function createFileFromPayload(payload: string | Record<string, any>, baseDir?: 
     return `Invalid payload: ${e.message}`;
   }
 
-  baseDir = baseDir || process.cwd();
+  const baseDir = runtime?.workingDir?.path || process.cwd();
   const targetDir = data.file_path;
 
   let fullDir: string;
@@ -143,15 +143,107 @@ function createFileFromPayload(payload: string | Record<string, any>, baseDir?: 
 }
 
 // ---------------------------------------------------------------------------
+// Remote (SSH) create-file operation
+// ---------------------------------------------------------------------------
+
+async function createFileFromPayloadRemote(
+  payload: string | Record<string, any>,
+  runtime?: Runtime
+): Promise<ExecutionResponse | string> {
+  let data: Record<string, any>;
+  const baseDir = runtime?.workingDir;
+  const serverName = baseDir?.kind === 'remote' ? baseDir.serverName : '';
+  const remoteBaseDir = baseDir?.path;
+  const server = baseDir?.kind === 'remote' ? baseDir.server : {};
+  try {
+    const raw = extractJson(payload) ?? {};
+    data = _normalize(raw);
+  } catch (e: any) {
+    return `Invalid payload: ${e.message}`;
+  }
+
+  if (!serverName) {
+    return 'Missing remote server name for SSH execution.';
+  }
+
+  const serverCfg = server;
+  if (!serverCfg) {
+    return `No SSH configuration found for server '${serverName}'.`;
+  }
+
+  // Resolve the target remote path (the remote host uses POSIX paths).
+  const targetDir = data.file_path;
+  let fullDir: string;
+  if (path.posix.isAbsolute(targetDir)) {
+    fullDir = targetDir;
+  } else {
+    fullDir = path.posix.resolve(remoteBaseDir || '.', targetDir);
+  }
+  const fullPath = path.posix.resolve(fullDir, data.filename);
+
+  const blocked = _isBlockedPath(fullPath);
+  if (blocked) {
+    return new ExecutionResponse(`Blocked path (contains '${blocked}'); refusing to write.`, data.prompt, data.sequential, true);
+  }
+
+  const connectConfig = buildConnectConfig(serverName, serverCfg);
+
+  let conn = null as any;
+  try {
+    conn = await connect(connectConfig);
+    const sftp = await getSftp(conn);
+
+    const exists = await remoteFileExists(sftp, fullPath);
+    if (exists && !data.overwrite) {
+      return new ExecutionResponse('File already exists.', data.prompt, data.sequential, true);
+    }
+
+    await sftpMkdir(sftp, fullDir);
+
+    let content = data.content;
+    if (typeof content !== 'string') {
+      content = JSON.stringify(content, null, 2);
+    }
+
+    await sftpWriteFile(sftp, fullPath, content);
+    const resp = `File ${fullPath} is created successfully.`;
+    return new ExecutionResponse(resp, data.prompt, data.sequential, true);
+  } catch (e: any) {
+    return `Failed to create remote file over SSH: ${e.message}`;
+  } finally {
+    if (conn) {
+      try { conn.end(); } catch { /* ignore */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Skill wrapper functions (called by the SkillManager)
 // ---------------------------------------------------------------------------
 
-function skillFileCreatorExecute(jsonPayload: string, baseDir: string = ''): ExecutionResponse | string {
-  return createFileFromPayload(jsonPayload, baseDir.trim() || undefined);
+function skillFileCreatorExecute(jsonPayload: string, runtime?: Runtime): ExecutionResponse | string {
+  return createFileFromPayload(jsonPayload, runtime);
 }
 
-export function execute(jsonPayload: string, baseDir: string = ''): ExecutionResponse | string {
-  return skillFileCreatorExecute(jsonPayload, baseDir);
+/**
+ * New entry point: create a file on a remote host over SSH. Mirrors
+ * skillFileCreatorExecute but targets the configured remote server.
+ */
+function skillFileCreatorExecuteRemote(
+  jsonPayload: string,
+  runtime?: Runtime
+): Promise<ExecutionResponse | string> {
+  return createFileFromPayloadRemote(jsonPayload, runtime);
+}
+
+export function execute(jsonPayload: string, runtime: Runtime): ExecutionResponse | string | Promise<ExecutionResponse | string> {
+  // Navigate the Runtime structure: the resolved working directory lives at
+  // runtime.workingDir (kind, serverName, path, server).
+  const workingDir = runtime?.workingDir;
+  if (workingDir && workingDir.kind === 'remote') {
+    return skillFileCreatorExecuteRemote(jsonPayload, runtime);
+  }
+  return skillFileCreatorExecute(jsonPayload, runtime);
 }
 
 export const ACTION_NAME = "create_file";

@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer, IpcRendererEvent } from 'electron';
+import { WorkingDir } from './common/common';
 
 /** Model configuration shape (must match src/core/llm.ts). */
 export interface ModelConfig {
@@ -107,6 +108,15 @@ const axleApi = {
   /** Get the working directory for a model. */
   getWorkingDir: (modelName: string): Promise<string | undefined> =>
     ipcRenderer.invoke('axle:getWorkingDir', modelName),
+
+  /**
+   * Classify a model's persisted working directory as 'remote' (an ssh:// URL)
+   * or 'local'. Used by the folder-selection dialog to decide which tab to
+   * open when it is shown.
+   */
+  getWorkingDirInfo: (
+    modelName?: string
+  ): Promise<WorkingDir> => ipcRenderer.invoke('axle:getWorkingDirInfo', modelName),
 
   /** Set/persist the working directory for a model. */
   setWorkingDir: (dir: string, modelName: string): Promise<boolean> =>

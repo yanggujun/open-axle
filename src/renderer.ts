@@ -6,6 +6,7 @@ import hljs from 'highlight.js';
 import { openLogsWindow } from './logsWindow';
 import { openFolderChooser } from './workingDir';
 import type { RemoteServer } from './workingDir';
+import { WorkingDir } from './common/common';
 
 // The renderer runs sandboxed (contextIsolation: true, nodeIntegration: false).
 // It must NOT import Node core modules (fs) or main-only Electron APIs.
@@ -52,6 +53,7 @@ declare global {
       getWorkingDir(modelName: string): Promise<string>;
       setWorkingDir(dir: string, modelName: string): Promise<boolean>;
       onBroadcast(cb: (data: AxleBroadcast) => void): () => void;
+      getWorkingDirInfo(modelName: string): Promise<WorkingDir>;
     };
   }
 }
@@ -308,14 +310,8 @@ function buildWorkspace(model: ModelConfig): Workspace {
 
   btnCd.addEventListener('click', async () => {
     const chosenDir = await openFolderChooser(modelName);
+    console.log(`Selecting ${chosenDir}`);
     if (!chosenDir) return;
-
-    // A remote-server selection ('remote://<name>') is NOT a local path, so it
-    // must not be routed through setWorkingDir/cd. Just surface the selection.
-    if (chosenDir.startsWith('remote://')) {
-      dirLabel.textContent = chosenDir;
-      return;
-    }
 
     await window.axle.setWorkingDir(chosenDir, modelName);
     await window.axle.cd(chosenDir, modelName);

@@ -15,7 +15,7 @@
  *   - exports execute() and ACTION_NAME
  */
 
-import { ExecutionResponse, extractJson, getSequential, getSkillConfig } from '../../core/executor';
+import { ExecutionResponse, extractJson, getSequential, Runtime } from '../../common/common';
 import { createDbExecutor } from '../../db/db';
 import type { DbConfig, DbType, DbExecutor } from '../../db/db';
 
@@ -198,18 +198,24 @@ function _resolveDbType(raw: Record<string, any>): DbType {
  * Expected entry shape:
  *   { skill: 'access_db', config_items: [ { name: '<profile>', value: { ... } } ] }
  */
-function _loadDbConfig(database: string, baseDir?: string): DbConfig {
+function _loadDbConfig(database: string, runtime?: Runtime): DbConfig {
   let raw: Record<string, any> = {};
 
-  const found = getSkillConfig("access_db", database);
+  if (!runtime) {
+    throw new Error("Runtime is not available.");
+  }
+  // Resolve the database profile from ALL skill configs carried by the
+  // Runtime (instead of re-reading .skill.config via getSkillConfig).
+  const skillEntry = (runtime.fullSkillConfig?.skill_configs ?? []).find(entry => entry.skill === 'access_db');
+  const configItem = (skillEntry?.config_items ?? []).find(item => item.name === database);
+  const found = configItem?.value ?? {};
   if (found && Object.keys(found).length > 0) {
     raw = found as Record<string, any>;
   }
 
   if (!raw || Object.keys(raw).length === 0) {
-    const searched = baseDir && baseDir.trim() ? baseDir.trim() : process.cwd();
     throw new Error(
-      `No database configuration found for '${database}' in .skill.config (searched home directory and ${searched})`,
+      `No database configuration found for '${database}' in .skill.config (skill_configs from Runtime)`,
     );
   }
 
@@ -311,7 +317,7 @@ function _normalize(payload: Record<string, any>): Record<string, any> {
 
 async function runDbFromPayload(
   payload: string | Record<string, any>,
-  baseDir?: string,
+  runtime?: Runtime,
 ): Promise<ExecutionResponse | string> {
   let data: Record<string, any>;
   try {
@@ -323,7 +329,7 @@ async function runDbFromPayload(
 
   let config: DbConfig;
   try {
-    config = _loadDbConfig(data.database, baseDir);
+    config = _loadDbConfig(data.database, runtime);
   } catch (e: any) {
     return `Configuration error: ${e.message}`;
   }
@@ -388,12 +394,12 @@ async function runDbFromPayload(
 // Skill wrapper functions (called by the SkillManager)
 // ---------------------------------------------------------------------------
 
-function skillDbAccessorExecute(jsonPayload: string, baseDir: string = ''): Promise<ExecutionResponse | string> {
-  return runDbFromPayload(jsonPayload, baseDir.trim() || undefined);
+function skillDbAccessorExecute(jsonPayload: string, runtime: Runtime): Promise<ExecutionResponse | string> {
+  return runDbFromPayload(jsonPayload, runtime);
 }
 
-export function execute(jsonPayload: string, baseDir: string = ''): Promise<ExecutionResponse | string> {
-  return skillDbAccessorExecute(jsonPayload, baseDir);
+export function execute(jsonPayload: string, runtime: Runtime): Promise<ExecutionResponse | string> {
+  return skillDbAccessorExecute(jsonPayload, runtime);
 }
 
 export const ACTION_NAME = 'access_db';

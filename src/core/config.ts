@@ -1,7 +1,28 @@
-import * as fs from 'fs';
 import * as os from 'os';
-import * as path from 'path';
 import { logger } from './logger';
+import * as fs from 'fs';
+import * as path from 'node:path';
+import { FullSkillConfig, SSH_SCHEME, WorkingDir } from '../common/common';
+
+
+/**
+ * Collapse runs of forward slashes into a single slash. This keeps parsing
+ * robust against inputs like `ssh://server//foo///bar` or `a//b/c`.
+ */
+function collapseSlashes(value: string): string {
+  return value.replace(/\/{2,}/g, '/');
+}
+
+/**
+ * Remove a single trailing slash unless the value is just the root `/`.
+ * Used to normalize both remote and local paths.
+ */
+function stripTrailingSlash(value: string): string {
+  if (value.length > 1 && value.endsWith('/')) {
+    return value.slice(0, -1);
+  }
+  return value;
+}
 
 export interface ModelConfig {
   name: string;
@@ -41,8 +62,13 @@ export class LlmConfig {
       this.config = parsed;
       if (this.config?.models) {
         for (const model of this.config?.models) {
-          if (model.workingDir != null && !isDirectory(model.workingDir)) {
-            model.workingDir = process.cwd();
+          if (model.workingDir) {
+            const workingDir = parsePath(model.workingDir);
+            if (workingDir.kind === 'local' && !isDirectory(workingDir.path)) {
+              model.workingDir = process.cwd();
+            } else {
+              model.workingDir = getFullWorkingPath(workingDir);
+            }
           }
         }
       }
@@ -156,10 +182,10 @@ export function getAppHome(): string {
   const processAppDir = path.join(processDir, dirName);
 
   let home = '';
-  if (isDirectory(homeAppDir)) {
-    home = homeAppDir;
-  } else if (isDirectory(processAppDir)) {
+  if (isDirectory(processAppDir)) {
     home = processAppDir;
+  } else if (isDirectory(homeAppDir)) {
+    home = homeAppDir;
   } else {
     fs.mkdirSync(homeAppDir, { recursive: true });
     home = homeAppDir;
@@ -177,4 +203,155 @@ function isDirectory(targetPath: string): boolean {
   } catch {
     return false;
   }
+}
+/**
+ * Flexible path parser used by {@link AxleAgent.cd}.
+ *
+ * When `input` has the form `ssh://<server>/<remotePath>` it is treated as a
+ * remote path and the server and remote path are extracted. Otherwise the
+ * input is treated as a local filesystem path (absolute or relative).
+ *
+ * The parser is intentionally forgiving:
+ *  - leading/trailing whitespace is trimmed;
+ *  - duplicate/extra slashes are collapsed;
+ *  - a trailing slash is stripped (except for the root `/`);
+ *  - a missing remote path defaults to `/`;
+ *  - an empty server name throws a clear error.
+ *
+ * @throws Error when `input` is empty or when a remote URL has no server name.
+ */
+
+export function parsePath(input: string | undefined): WorkingDir {
+  if (input === undefined || input === null) {
+    throw new Error('parsePath: path must not be null or undefined.');
+  }
+
+  const trimmed = input.trim();
+  if (trimmed === '') {
+    throw new Error('parsePath: path must not be empty.');
+  }
+
+  if (SSH_SCHEME.test(trimmed)) {
+    // Strip the scheme, then split the first path separator off the host.
+    const withoutScheme = trimmed.replace(SSH_SCHEME, '');
+    const firstSlash = withoutScheme.indexOf('/');
+
+    let server: string;
+    let remotePath: string;
+    if (firstSlash === -1) {
+      // e.g. `ssh://server` -> no explicit remote path.
+      server = withoutScheme;
+      remotePath = '/';
+    } else {
+      server = withoutScheme.slice(0, firstSlash);
+      remotePath = withoutScheme.slice(firstSlash);
+    }
+
+    server = server.trim();
+    if (server === '') {
+      throw new Error(`parsePath: remote path '${input}' is missing a server name.`);
+    }
+    const serverName = server;
+
+    // Normalize the remote path: collapse extra slashes, default to '/',
+    // ensure it is absolute, and drop any trailing slash.
+    remotePath = collapseSlashes(remotePath.trim());
+    if (remotePath === '' || remotePath === '/') {
+      remotePath = '/';
+    } else {
+      if (!remotePath.startsWith('/')) {
+        remotePath = '/' + remotePath;
+      }
+      remotePath = stripTrailingSlash(remotePath);
+    }
+
+    // Resolve the remote server configuration, preferring the 'ssh' skill and
+    // falling back to 'scp'. getSkillConfig returns {} when not found, which
+    // we treat as 'no match' and store as null.
+    let config = getSkillConfig('ssh', serverName);
+    if (!config || Object.keys(config).length === 0) {
+      config = getSkillConfig('scp', serverName);
+    }
+    const resolvedServer = config && Object.keys(config).length > 0 ? config : null;
+
+    return { kind: 'remote', serverName, path: remotePath, server: resolvedServer };
+  }
+
+  // Local path: collapse redundant slashes and drop a trailing slash, while
+  // still allowing relative paths (we do not force a leading '/').
+  const localPath = stripTrailingSlash(collapseSlashes(trimmed));
+  return { kind: 'local', path: localPath };
+}
+export function getSkillConfig(skillName: string, name: string): Record<string, string> {
+  const appHome = getAppHome();
+  let configPath = path.join(appHome, ".skill.config");
+
+  let config: Record<string, string> = {};
+  if (fs.existsSync(configPath)) {
+    let fullConfig: any;
+    try {
+      fullConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (error) {
+      logger.log("Failed to read skill config");
+    }
+
+    if (fullConfig) {
+      const axleList = fullConfig.skill_configs || [];
+      for (const entry of axleList) {
+        if (entry.skill === skillName) {
+          const configItems = entry.config_items || [];
+          for (const item of configItems) {
+            if (item.name === name) {
+              config = item.value;
+              break;
+            }
+          }
+          break;
+        }
+      }
+    }
+  }
+
+  return config;
+}
+
+/**
+ * Reads the `.skill.config` file and returns ALL skill configs — every skill
+ * entry together with all of its `config_items` — unlike {@link getSkillConfig}
+ * which resolves only one skill's single config item value.
+ *
+ * When the config file is missing or unreadable, an empty {@link FullSkillConfig}
+ * (with an empty `skill_configs` array) is returned.
+ */
+export function getFullSkillConfig(): FullSkillConfig {
+  const appHome = getAppHome();
+  let configPath = path.join(appHome, ".skill.config");
+
+  let config: FullSkillConfig = { skill_configs: [] };
+  if (fs.existsSync(configPath)) {
+    let fullConfig: any;
+    try {
+      fullConfig = JSON.parse(fs.readFileSync(configPath, 'utf-8'));
+    } catch (error) {
+      logger.log("Failed to read skill config");
+    }
+
+    if (fullConfig) {
+      const axleList = fullConfig.skill_configs || [];
+      config = { skill_configs: axleList };
+    }
+  }
+
+  return config;
+}
+
+export function getFullWorkingPath(workingDir: WorkingDir | undefined): string {
+  let cwd = '';
+  if (workingDir?.kind === 'remote') {
+    cwd = `ssh://${workingDir.serverName}/${workingDir.path}`;
+  } else {
+    cwd = `${workingDir?.path}`;
+  }
+
+  return cwd;
 }

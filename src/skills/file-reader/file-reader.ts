@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { ExecutionResponse, extractJson, getSequential, readFile } from '../../core/executor';
+import { Runtime, ExecutionResponse, extractJson, getSequential, readFile, buildConnectConfig, connect, getSftp, sftpReadFile } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -104,7 +104,7 @@ function _normalize(payload: Record<string, any>): Record<string, any> {
 // Core read-file operation
 // ---------------------------------------------------------------------------
 
-function readFileFromPayload(payload: string | Record<string, any>, baseDir?: string): ExecutionResponse | string {
+function readFileFromPayload(payload: string | Record<string, any>, runtime?: Runtime): ExecutionResponse | string {
   let data: Record<string, any>;
   try {
     const raw = extractJson(payload) ?? {};
@@ -113,7 +113,7 @@ function readFileFromPayload(payload: string | Record<string, any>, baseDir?: st
     return `Invalid payload: ${e.message}`;
   }
 
-  baseDir = baseDir || process.cwd();
+  const baseDir = runtime?.workingDir?.path || process.cwd();
   const targetDir = data.file_path;
 
   // Resolve target path.
@@ -164,15 +164,163 @@ function readFileFromPayload(payload: string | Record<string, any>, baseDir?: st
 }
 
 // ---------------------------------------------------------------------------
+// Remote (SSH) read-file operation
+// ---------------------------------------------------------------------------
+
+// Same extension -> code-fence language mapping used by the local readFile.
+const REMOTE_CODE_EXTENSION_LANGUAGE_MAP: Record<string, string> = {
+  '.java': 'java',
+  '.cpp': 'cpp',
+  '.cc': 'cpp',
+  '.cxx': 'cpp',
+  '.h': 'cpp',
+  '.hpp': 'cpp',
+  '.c': 'c',
+  '.py': 'python',
+  '.js': 'javascript',
+  '.jsx': 'javascript',
+  '.mjs': 'javascript',
+  '.cjs': 'javascript',
+  '.ts': 'typescript',
+  '.tsx': 'typescript',
+  '.go': 'go',
+  '.rs': 'rust',
+  '.rb': 'ruby',
+  '.php': 'php',
+  '.cs': 'csharp',
+  '.kt': 'kotlin',
+  '.swift': 'swift',
+  '.scala': 'scala',
+  '.sh': 'bash',
+  '.json': 'json',
+  '.xml': 'xml',
+  '.html': 'html',
+  '.css': 'css',
+  '.sql': 'sql',
+  '.yaml': 'yaml',
+  '.yml': 'yaml',
+};
+
+async function readFileFromPayloadRemote(
+  payload: string | Record<string, any>,
+  runtime?: Runtime
+): Promise<ExecutionResponse | string> {
+  let data: Record<string, any>;
+  const baseDir = runtime?.workingDir;
+  const serverName = baseDir?.kind === 'remote' ? baseDir.serverName : '';
+  const remoteBaseDir = baseDir?.path;
+  const server = baseDir?.kind === 'remote' ? baseDir.server : {};
+  try {
+    const raw = extractJson(payload) ?? {};
+    data = _normalize(raw);
+  } catch (e: any) {
+    return `Invalid payload: ${e.message}`;
+  }
+
+  if (!serverName) {
+    return 'Missing remote server name for SSH execution.';
+  }
+
+  // Resolve the target remote path (the remote host uses POSIX paths).
+  const targetDir = data.file_path;
+  const fullDir = path.posix.isAbsolute(targetDir)
+    ? targetDir
+    : path.posix.resolve(remoteBaseDir || '.', targetDir);
+  const fullPath = path.posix.resolve(fullDir, data.filename);
+
+  const blocked = _isBlockedPath(fullPath);
+  if (blocked) {
+    return `Blocked path (contains '${blocked}'); refusing to read.`;
+  }
+
+  const serverCfg = server;
+  if (!serverCfg) {
+    return `No SSH configuration found for server '${serverName}'.`;
+  }
+
+  const connectConfig = buildConnectConfig(serverName, serverCfg);
+
+  let conn = null as any;
+  try {
+    conn = await connect(connectConfig);
+    const sftp = await getSftp(conn);
+
+    let raw: string;
+    try {
+      raw = await sftpReadFile(sftp, fullPath);
+    } catch {
+      return new ExecutionResponse(
+        `FILE NOT FOUND: ${fullPath}, PLEASE FIND THE FILE FIRST`,
+        data.prompt,
+        true,
+        false
+      );
+    }
+
+    // Reproduce local readFile line-range / maxBytes semantics.
+    let content: string;
+    if (data.end_line > 0 || data.start_line > 1) {
+      const allLines = raw.split(/\r?\n/);
+      const start = Math.max(1, data.start_line);
+      const end = data.end_line > 0 ? data.end_line : allLines.length;
+      const endIdx = Math.min(end, allLines.length);
+      content = allLines.slice(start - 1, endIdx).join('\n');
+    } else if (data.max_bytes > 0) {
+      content = raw.substring(0, data.max_bytes);
+    } else {
+      content = raw;
+    }
+
+    const extWithDot = path.posix.extname(fullPath).toLowerCase();
+    const language = REMOTE_CODE_EXTENSION_LANGUAGE_MAP[extWithDot];
+    if (language) {
+      content = '```' + language + '\n' + content + '\n```';
+    }
+
+    const ext = extWithDot.replace(/^\./, '');
+
+    const seq = data.sequential;
+    let nextPrompt = data.prompt;
+    if (seq && data.prompt) {
+      nextPrompt = `${data.prompt}\n\nFollowing is the content of file ${fullPath}:\n\n`;
+    }
+    return new ExecutionResponse(content, nextPrompt, seq, !seq, ext);
+  } catch (e: any) {
+    return `Failed to read remote file over SSH: ${e.message}`;
+  } finally {
+    if (conn) {
+      try { conn.end(); } catch { /* ignore */ }
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Skill wrapper functions (called by the SkillManager)
 // ---------------------------------------------------------------------------
 
-function skillFileReaderExecute(jsonPayload: string, baseDir: string = ''): ExecutionResponse | string {
-  return readFileFromPayload(jsonPayload, baseDir.trim() || undefined);
+function skillFileReaderExecute(jsonPayload: string, runtime?: Runtime): ExecutionResponse | string {
+  return readFileFromPayload(jsonPayload, runtime);
 }
 
-export function execute(jsonPayload: string, baseDir: string = ''): ExecutionResponse | string {
-  return skillFileReaderExecute(jsonPayload, baseDir);
+/**
+ * New entry point: read a file on a remote host over SSH. Mirrors
+ * skillFileReaderExecute but targets the configured remote server.
+ */
+function skillFileReaderExecuteRemote(
+  jsonPayload: string,
+  runtime?: Runtime
+): Promise<ExecutionResponse | string> {
+  return readFileFromPayloadRemote(jsonPayload, runtime);
+}
+
+export function execute(jsonPayload: string, runtime: Runtime): ExecutionResponse | string | Promise<ExecutionResponse | string> {
+  // Navigate the Runtime structure: the resolved working directory lives at
+  // runtime.workingDir (kind, serverName, path, server).
+  const workingDir = runtime?.workingDir;
+  if (workingDir && workingDir.kind === 'remote') {
+    return skillFileReaderExecuteRemote(jsonPayload, runtime);
+  }
+  return skillFileReaderExecute(jsonPayload, runtime);
 }
 
 export const ACTION_NAME = "read_file";
