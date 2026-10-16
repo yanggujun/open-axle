@@ -39,11 +39,8 @@ const OUT_DIR = `${OUT_ROOT}/skills`;
 const SRC_COMMON_DIR = 'src/common';
 const COMMON_ENTRY = join(SRC_COMMON_DIR, 'common.ts');
 const OUT_COMMON_DIR = `${OUT_ROOT}/common`;
+const EXTERNALS: string[] = ['electron', 'openai', '*.node'];
 
-// Modules that must NOT be bundled into skills: the Electron runtime plus
-// native/heavy dependencies. These stay as require(...) and are resolved at
-// runtime.
-const EXTERNALS: string[] = ['electron', 'openai'];
 
 // For the shared common bundle only the Electron runtime stays external.
 // Dependencies of common.ts (e.g. ssh2) are bundled with it so the released
