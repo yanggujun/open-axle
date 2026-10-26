@@ -56,9 +56,26 @@ const axleApi = {
   setModelActive: (modelName: string, active: boolean): Promise<boolean> =>
     ipcRenderer.invoke('axle:setModelActive', modelName, active),
 
-  /** Send a user message to the agent bound to the given model name. */
-  talk: (text: string, modelName: string): Promise<void> =>
-    ipcRenderer.invoke('axle:talk', text, modelName),
+  /**
+   * Send a user message to the agent bound to the given model name, with an
+   * OPTIONAL list of base64 image attachments ([{ format, content }]).
+   */
+  talk: (
+    text: string,
+    modelName?: string,
+    attachments?: { format: string; content: string }[]
+  ): Promise<void> =>
+    ipcRenderer.invoke('axle:talk', text, modelName, attachments),
+
+  /**
+   * Save a model-returned image (given as an image data URL) into the agent's
+   * current working directory. Returns { ok, path?, fileName?, error? }.
+   */
+  saveImage: (
+    dataUrl: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; path?: string; fileName?: string; error?: string }> =>
+    ipcRenderer.invoke('axle:saveImage', dataUrl, modelName),
 
   /** Switch the active agent/tab to the given model name. */
   switchAgent: (modelName: string): Promise<void> =>
@@ -93,6 +110,16 @@ const axleApi = {
   listDir: (dir: string): Promise<string[]> => ipcRenderer.invoke('axle:listDir', dir),
 
   /**
+   * List a LOCAL directory's entries (BOTH files and folders), in a stable
+   * order (folders first, then files). Used by the right-side dock's 'Files'
+   * tab to render the working directory's sub-folders and files as a tree.
+   * Remote (ssh://) paths return an empty array (listing over SSH is handled
+   * separately by the folder-selection dialog).
+   */
+  listEntries: (dir: string): Promise<{ name: string; type: 'file' | 'folder' }[]> =>
+    ipcRenderer.invoke('axle:listEntries', dir),
+
+  /**
    * List sub-directories of a directory on a REMOTE server, over SSH. Used by
    * the folder-selection dialog's 'remote' tab to browse the remote home dir
    * exactly like the local tab uses listDir. `serverName` matches a
@@ -101,9 +128,11 @@ const axleApi = {
    */
   listRemoteDir: (
     serverName: string,
-    remotePath?: string
+    remotePath?: string,
+    includeFiles?: boolean,
+    modelName?: string
   ): Promise<{ path: string; dirs: string[]; error: string }> =>
-    ipcRenderer.invoke('axle:listRemoteDir', serverName, remotePath),
+    ipcRenderer.invoke('axle:listRemoteDir', serverName, remotePath, includeFiles, modelName),
 
   /** Get the working directory for a model. */
   getWorkingDir: (modelName: string): Promise<string | undefined> =>
@@ -169,6 +198,41 @@ const axleApi = {
     ) => callback(data);
     ipcRenderer.on('axle:logData', listener);
     return () => ipcRenderer.removeListener('axle:logData', listener);
+  },
+
+  /**
+   * Ask the main process to WATCH a LOCAL directory for filesystem changes
+   * (add/remove/rename). Used by the right-side dock's 'Files' tab so it can
+   * refresh a listing when the OS reports a change. The watcher observes a
+   * single, non-recursive directory: the tab adds one when a folder row is
+   * expanded and removes it when the folder is collapsed. Remote (ssh://)
+   * paths are ignored by the main process. Resolves true when a watcher is in
+   * place (or already existed).
+   */
+  watchDir: (dir: string): Promise<boolean> => ipcRenderer.invoke('axle:watchDir', dir),
+
+  /**
+   * Stop watching a LOCAL directory. Called when a folder row is collapsed (for
+   * that folder and every expanded descendant) so no watcher is left running.
+   */
+  unwatchDir: (dir: string): Promise<boolean> => ipcRenderer.invoke('axle:unwatchDir', dir),
+
+  /**
+   * Stop watching EVERY directory. Called when the 'Files' tab is disposed or
+   * its working directory changes, releasing all watchers at once.
+   */
+  unwatchAll: (): Promise<boolean> => ipcRenderer.invoke('axle:unwatchAll'),
+
+  /**
+   * Subscribe to filesystem-change events pushed from the main process. Each
+   * payload carries the directory (`dir`) that changed, so the tab can re-list
+   * just that directory. Mirrors onBroadcast/onLogData: returns an unsubscribe
+   * function.
+   */
+  onFsChanged: (callback: (data: { dir: string }) => void): (() => void) => {
+    const listener = (_event: IpcRendererEvent, data: { dir: string }) => callback(data);
+    ipcRenderer.on('axle:fsChanged', listener);
+    return () => ipcRenderer.removeListener('axle:fsChanged', listener);
   },
 };
 

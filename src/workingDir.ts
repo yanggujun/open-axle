@@ -295,6 +295,10 @@ export function openFolderChooser(modelName: string): Promise<string | null> {
   remoteTab.addEventListener('click', () => showTab('remote'));
 
   function joinPath(dir: string, name: string): string {
+    // A bare drive root like 'C:' refers to the *current directory* on that
+    // drive (not to its root), so normalize it to 'C:\' before joining:
+    // joinPath('C:', 'Users') must yield 'C:\Users', not 'C:/Users'.
+    if (/^[A-Za-z]:$/.test(dir)) return dir + '\\' + name;
     const sep = dir.includes('\\') ? '\\' : '/';
     return dir.endsWith(sep) ? dir + name : dir + sep + name;
   }
@@ -302,6 +306,13 @@ export function openFolderChooser(modelName: string): Promise<string | null> {
   function parentPath(dir: string): string {
     const sep = dir.includes('\\') ? '\\' : '/';
     const idx = dir.lastIndexOf(sep);
+    // A Windows drive root must KEEP its trailing separator: the parent of
+    // 'C:\Users' is 'C:\' (the real root), and 'C:\' itself has no parent.
+    // The old code returned 'C:' (a drive-relative path, not the root), which
+    // made listing directories at the root of a main drive like C:\ fail.
+    if (idx === 2 && /^[A-Za-z]:$/.test(dir.substring(0, idx))) {
+      return dir.substring(0, idx) + sep;
+    }
     if (idx <= 0) return dir;
     return dir.substring(0, idx);
   }

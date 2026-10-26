@@ -202,7 +202,36 @@ h1 {
   color: #ffcc80;
 }
 
-/* Workspaces container fills the remaining height below the tab bar. */
+/* Main split region: horizontal flex row. The LEFT column (.left-column) holds
+   the per-model tab bar plus the chat workspaces; the RIGHT column
+   (#right-workspace) holds the right dock. This horizontal split is what makes
+   the right workspace render to the RIGHT of the chat (instead of stacked
+   below it). */
+#main,
+.main {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* LEFT column: the model tab bar (#tab-bar) sits on the TOP line and the model
+   chat workspaces fill the space below it. Taking flex:2 of #main makes it
+   ~2/3 of the total width, matching the right dock's 1/3. */
+.left-column {
+  flex: 2 1 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Workspaces container: fills the space below the model tab bar, inside the
+   left column (so it is a plain flex child of .left-column now, not a direct
+   child of #main). min-width:0 lets it shrink instead of overflowing. */
 #workspaces,
 .workspaces {
   flex: 1 1 auto;
@@ -210,7 +239,303 @@ h1 {
   display: flex;
   flex-direction: column;
   min-height: 0;
+  min-width: 0;
   overflow: hidden;
+}
+
+/* Right workspace dock: the RIGHT column. Its width is driven by the
+   --right-width custom property: initRightWorkspace() (src/rightWorkspace.ts)
+   seeds it (380px) and makeResizable() updates it live while the left-edge grip
+   is dragged. flex:0 0 auto means the dock neither grows nor shrinks, so
+   dragging the grip resizes it left <-> right while .left-column (flex:2) fills
+   the remaining space. Falls back to ~1/3 of the split when unset. */
+#right-workspace,
+.right-workspace {
+  flex: 0 0 auto;
+  width: var(--right-width, 33.33%);
+  position: relative;
+  display: flex;
+  /* Vertical column: the tab-bar header sits on top and the panels fill the
+     remaining height. (The collapse control lives in the tab bar, so no
+     left-edge strip is needed here.) */
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  border-left: 1px solid #444;
+  background-color: #1a1a1a;
+}
+
+/* Left-edge resize grip for the dock: DRAG this to resize the dock left <->
+   right (see makeResizable in src/rightWorkspace.ts). Positioned ABSOLUTELY so
+   it overlaps the dock's left edge and consumes NO vertical space -- this keeps
+   the dock's tab header flush with the model tab bar on the same top row. It is
+   made ~8px wide with a high z-index so it is easy to grab, and it highlights
+   in the app accent color on hover/drag. */
+.right-workspace-resizer {
+  position: absolute;
+  top: 0;
+  /* Pin to the dock's left edge (there is no left strip any more). */
+  left: 0;
+  width: 4px;
+  height: 100%;
+  cursor: ew-resize;
+  z-index: 10;
+  background-color: transparent;
+  transition: background-color 0.12s ease;
+}
+
+.right-workspace-resizer:hover,
+.right-workspace-resizer:active {
+  background-color: #4fc3f7;
+}
+
+/* Inner wrapper of the dock: a vertical flex column so the tab header sits on
+   top and the panels fill the remaining height. */
+.right-dock-inner {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Dock header row: mirrors the LEFT model tab bar (#tab-bar) EXACTLY -- same
+   padding, background and bottom border -- so the two tab bars line up on the
+   same top line with matching heights. Holds the tab strip plus the close (x)
+   button. */
+.right-dock-header {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 6px 8px 0 8px;
+  background-color: #252526;
+  border-bottom: 1px solid #444;
+  flex: 0 0 auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* The tab strip inside the header: a horizontal row of tabs that flexes to
+   fill the space (so the close button is pinned to the far right). */
+.right-dock-header > .right-tabs {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+/* Panels area: fills the space below the dock header. It is a vertical flex
+   column so its child .right-panel fills the whole area (see below). */
+.right-panels {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* A dock tab's panel. Each open tab owns one .right-panel (created in
+   rightWorkspace.ts openRightTab) inserted into #right-panels. WITHOUT a rule
+   it defaulted to a plain block element that grew to fit its content, which
+   broke the flex/overflow chain and prevented inner content (e.g. the log)
+   from scrolling -- the reported bug. Filling the area as a vertical flex
+   column restores the chain so deep children can be constrained and scroll.
+   Only the ACTIVE tab's panel is visible (others carry .hidden ->
+   display:none), so the panels never stack. */
+.right-panel {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* 'no panel open' hint shown in the panels area. */
+.right-empty {
+  padding: 16px;
+  color: #9e9e9e;
+  font-size: 13px;
+  line-height: 1.5;
+}
+
+/* ============================================================
+   Inline log view (dock tab 'Logs')
+   ------------------------------------------------------------
+   Presentation for src/logView.ts (buildLogView). Mirrors the
+   old floating .logs-window look, but lives inline in the right
+   dock. The body is the ONLY scrolling area -- mirroring
+   .logs-window-body -- and flexes to fill the panel so the user
+   can scroll the whole log.
+   ============================================================ */
+.log-view {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background-color: #1a1a1a;
+  color: #e0e0e0;
+}
+
+.log-view-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 12px;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #444;
+  flex: 0 0 auto;
+}
+
+.log-view-title {
+  font-size: 14px;
+  font-weight: bold;
+  color: #4fc3f7;
+  white-space: nowrap;
+}
+
+.log-view-path {
+  flex: 1;
+  font-size: 11px;
+  color: #9e9e9e;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+/* Scrollable, pre-formatted log content: flex-fills the panel and is the only
+   scrolling area (identical to .logs-window-body) so the whole log shows and
+   the view can stay pinned to the bottom. */
+.log-view-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: auto;
+  padding: 10px 12px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  background-color: #141414;
+  color: #d4d4d4;
+}
+
+/* Copy-only context menu for the inline log view (see showCopyMenu in
+   src/logView.ts). The log body is read-only, so the menu exposes ONLY a
+   Copy item. Mirrors .add-menu's floating dark card so the two menus look
+   consistent; it is position:fixed and appended to <body>, so it floats above
+   the dock without affecting the log layout, scrolling, or live tail. */
+.log-copy-menu {
+  position: fixed;
+  z-index: 1000;
+  min-width: 120px;
+  padding: 4px;
+  background-color: #252526;
+  border: 1px solid #444;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.4);
+}
+
+.log-copy-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #ccc;
+  padding: 8px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 14px;
+}
+
+.log-copy-menu-item:hover {
+  background-color: #3a3a3d;
+}
+
+/* Right-dock tabs: styled to MATCH the left .tab-button family so both tab
+   bars look identical. */
+.right-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background-color: #2d2d30;
+  border: 1px solid #444;
+  border-bottom: none;
+  color: #ccc;
+  padding: 8px 12px 8px 16px;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  white-space: nowrap;
+  font-size: 14px;
+}
+
+.right-tab:hover {
+  background-color: #3a3a3d;
+}
+
+.right-tab.active {
+  background-color: #1a1a1a;
+  color: #4fc3f7;
+  border-color: #4fc3f7;
+  font-weight: bold;
+}
+
+.right-tab-label {
+  flex: 1;
+}
+
+.right-tab-close {
+  margin-left: auto;
+  padding: 0 6px;
+  border-radius: 4px;
+  color: #888;
+  font-size: 15px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.right-tab-close:hover {
+  color: #fff;
+  background-color: #c62828;
+}
+
+/* Close (x) button for the whole dock: subtle gray glyph that highlights red
+   on hover, mirroring the per-tab close and the .logs-window-close styling.
+   Clicking it only hides the dock (open tabs are preserved). */
+.right-dock-close {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0 6px;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: #888;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.right-dock-close:hover {
+  color: #fff;
+  background-color: #c62828;
 }
 
 /* Each per-model workspace panel (and the config panel) fills the
@@ -618,4 +943,282 @@ pre {
   font-style: italic;
   font-size: 14px;   /* 1 unit smaller than the base 16px chat message */
   color: #d5e502;   /* dark gray: midway between #808080 gray and #000000 black */
+}
+
+/* ============================================================
+   Collapsible right workspace (minimize / extend)
+   ------------------------------------------------------------
+   By DEFAULT the dock starts COLLAPSED: a thin strip pinned to
+   the far RIGHT of the window that shows only the extend button
+   (.right-expand). Clicking it (expandRightWorkspace) removes the
+   'collapsed' class to reveal the full dock; the dock's own
+   collapse button (.right-dock-collapse) re-applies the class.
+   See src/rightWorkspace.ts.
+   ============================================================ */
+
+/* Collapsed state: the dock shows NO vertical bar at all. It collapses to
+   zero width (its content is hidden) and only a small extend button remains,
+   floating at the far-right corner of the window. */
+#right-workspace.collapsed,
+.right-workspace.collapsed {
+  flex: 0 0 0;
+  width: 0;
+  min-width: 0;
+  max-width: 0;
+  border-left: none;
+}
+
+#right-workspace.collapsed .right-dock-inner,
+.right-workspace.collapsed .right-dock-inner {
+  display: none !important;
+}
+
+/* The resize grip is meaningless while collapsed. */
+#right-workspace.collapsed .right-workspace-resizer,
+.right-workspace.collapsed .right-workspace-resizer {
+  display: none !important;
+}
+
+/* Extend button: the thin strip button shown ONLY while the dock is collapsed.
+   It fills the strip's height, carries a left-pointing chevron and highlights
+   in the app accent color on hover. Hidden in the expanded state. */
+.right-expand {
+  display: none;
+}
+
+#right-workspace.collapsed .right-expand,
+.right-workspace.collapsed .right-expand {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* A small floating button at the far-right TOP corner of the window (the
+     same spot the in-tab-bar collapse button occupies), NOT a vertical bar. */
+  position: fixed;
+  top: 6px;
+  right: 6px;
+  width: 28px;
+  height: 28px;
+  margin: 0;
+  padding: 0;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: #888;
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  z-index: 50;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+#right-workspace.collapsed .right-expand:hover,
+.right-workspace.collapsed .right-expand:hover {
+  color: #fff;
+  background-color: #4fc3f7;
+}
+
+/* Dock collapse (minimize) button: lives in the tab bar, pinned to the FAR
+   RIGHT (after the close button). Matches .right-dock-close's geometry but
+   uses an accent hover (instead of red) so it reads as a size toggle, not a
+   close action. */
+.right-dock-collapse {
+  flex: 0 0 auto;
+  align-self: center;
+  margin: 0 2px;
+  width: 24px;
+  height: 24px;
+  line-height: 1;
+  border: none;
+  border-radius: 4px;
+  background: none;
+  color: #888;
+  font-size: 18px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.right-dock-collapse:hover {
+  color: #fff;
+  background-color: #4fc3f7;
+}
+
+/* ============================================================
+   Custom scrollbars (dark theme)
+   ------------------------------------------------------------
+   The app theme previously defined NO scrollbar styling, so the
+   left-column workspace (#workspaces / .left-column), the chat
+   log, the right-dock lists and the log views all fell back to
+   the OS default LIGHT scrollbar, which clashed with the dark
+   main screen (body #1e1e1e, panels #1a1a1a). These rules make
+   every scrollbar match the main screen:
+     track  -> #1a1a1a (matches workspace panel background)
+     thumb  -> #3c3c3c (matches .controls button background)
+     hover  -> #4a4a4a (matches .controls button hover)
+   Applies to all scroll areas above -- both vertical and
+   horizontal -- with no per-element overrides needed.
+   ============================================================ */
+
+/* Chromium / WebKit (Electron renderer) */
+::-webkit-scrollbar {
+  width: 12px;
+  height: 12px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #3c3c3c;
+  border-radius: 6px;
+  border: 2px solid #1a1a1a;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #4a4a4a;
+}
+
+::-webkit-scrollbar-corner {
+  background: #1a1a1a;
+}
+
+/* Firefox / standards-based fallback */
+* {
+  scrollbar-color: #3c3c3c #1a1a1a;
+  scrollbar-width: thin;
+}
+
+/* Send button in 'Stop' mode: while a model's task loop is running the Send
+   button doubles as the Stop button. It is tinted light orange to signal the
+   alternate action, stays fully clickable (cursor: pointer) so the loop can be
+   stopped with the mouse, and reverts to its normal color once the agent
+   signals 'idle'. */
+.send-btn.stop-mode,
+.send-btn.stop-mode:hover,
+.send-btn.stop-mode:focus {
+  background-color: #ffb74d; /* light orange */
+  border-color: #f0a13a;
+  color: #4a3200;
+  cursor: pointer;
+}
+
+.send-btn.stop-mode:hover {
+  background-color: #ffa726; /* slightly deeper light orange on hover */
+}
+
+/* Inline image attachments shown inside a chat-log message bubble. When a
+   user sends a message with pasted images, the images are rendered as a small
+   gallery beneath (or instead of) the message text. */
+.message-images {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 8px;
+}
+
+.message-image-thumb {
+  max-width: 160px;
+  max-height: 160px;
+  width: auto;
+  height: auto;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  object-fit: cover;
+  background: #ffffff;
+  cursor: default;
+}
+
+/* Full-screen overlay used to view a chat-log image at its ORIGINAL size.
+   Opened by clicking a message thumbnail; dismissed by clicking anywhere on
+   the overlay or pressing Escape. Because the image is unconstrained
+   (max-width/height: none) it renders at full resolution, and the overlay
+   scrolls when the image is larger than the viewport. */
+.image-overlay {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(0, 0, 0, 0.75);
+  cursor: zoom-out;
+  overflow: auto;
+  z-index: 1000;
+  padding: 24px;
+  box-sizing: border-box;
+}
+
+.image-overlay.hidden {
+  display: none;
+}
+
+.image-overlay-img {
+  max-width: none;
+  max-height: none;
+  width: auto;
+  height: auto;
+  background: #ffffff;
+  cursor: zoom-out;
+}
+
+/* Image returned by the model (responses API) and rendered as a bubble in the
+   chat log. Bounded so large outputs do not overflow the message column;
+   click to view at original size in the .image-overlay. */
+/* Image shown in a chat-log message bubble. Used for USER image messages
+   (renderer.ts sets inline max-width:100% + max-height = chat-log height so the
+   image shows at its ORIGINAL size and only scales down to fit the chat window)
+   as well as for model-returned images. This base rule imposes NO fixed size
+   cap, so it never clamps the inline sizing above; the model-returned variant
+   keeps its 320px bound scoped to `.chat-image-wrap .chat-image` below. */
+.chat-image {
+  display: block;
+  max-width: 100%;
+  width: auto;
+  height: auto;
+  border: 1px solid #d0d7de;
+  border-radius: 6px;
+  margin: 8px 0;
+  background: #ffffff;
+}
+
+/* Hover-reveal Save button for a model-returned chat image. The image sits
+   inside .chat-image-wrap; the Save button is absolutely positioned in the
+   top-right corner, hidden by default, and appears only on hover. Clicking the
+   button saves the image into the working dir; clicking the image enlarges it
+   (the button stops propagation so its click never bubbles to the image). */
+.chat-image-wrap {
+  position: relative;
+  display: inline-block;
+  margin: 8px 0;
+}
+
+/* Model-returned image bubble: keep the 320px bound HERE (scoped) so only the
+   responses-API image is clamped; USER image messages use the unconstrained
+   base `.chat-image` (with inline sizing) instead. */
+.chat-image-wrap .chat-image {
+  max-width: 320px;
+  max-height: 320px;
+  margin: 0;
+}
+
+.chat-image-save {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: none;
+  padding: 4px 10px;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #ffffff;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid rgba(255, 255, 255, 0.5);
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.chat-image-save:hover {
+  background: rgba(0, 0, 0, 0.82);
+}
+
+.chat-image-wrap:hover .chat-image-save {
+  display: block;
 }

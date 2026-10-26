@@ -7,19 +7,34 @@
 </head>
 <body>
   <div id="app">
-    <!-- Tab bar for multiple LLM configurations. One tab per model + an Add tab. -->
-    <nav id="tab-bar" class="tab-bar hidden"></nav>
+    <div id="main" class="main">
+      <!--
+        LEFT column: the per-model tab bar sits on the TOP line (so it lines up
+        with the right dock's tab bar) and the model chat workspaces fill the
+        space below it. Each model gets its OWN workspace panel created at
+        runtime by the renderer; only the active panel is visible.
+      -->
+      <div id="left-column" class="left-column">
+        <nav id="tab-bar" class="tab-bar hidden"></nav>
+        <div id="workspaces" class="workspaces hidden"></div>
+      </div>
 
-    <!--
-      Workspaces container. Each configured model gets its OWN workspace panel
-      dynamically created by the renderer. Panels are NOT shared: each has its
-      own chat-log, message input, controls, cd path and server-status.
-
-      Config panels are ALSO built dynamically here: clicking the '+' tab opens
-      a temporary config tab whose panel contains a form to add a new LLM. Only
-      the active panel is visible; the rest carry the "hidden" class.
-    -->
-    <div id="workspaces" class="workspaces hidden"></div>
+      <!--
+        RIGHT column (#right-workspace): the pluggable tabbed dock. Its tab
+        strip lives in a header ROW at the very top so it lines up with the
+        model tab bar on the LEFT; the dock's panels fill the space below it.
+        The first two built-in tabs are 'Logs' (live application log) and
+        'Files' (the working directory tree). Additional tab types can be
+        plugged in at runtime via window.rightWorkspace.
+      -->
+      <div id="right-workspace" class="right-workspace hidden">
+        <div class="right-workspace-resizer" title="Drag to resize"></div>
+        <div class="right-dock-inner">
+          <div id="right-tabs" class="right-tabs"></div>
+          <div id="right-panels" class="right-panels"></div>
+        </div>
+      </div>
+    </div>
   </div>
   <script defer src="./renderer.ts"></script>
 </body>

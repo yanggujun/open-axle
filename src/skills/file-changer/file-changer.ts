@@ -267,7 +267,7 @@ function changeFileFromPayload(payload: string | Record<string, any>, runtime?: 
     const raw = extractJson(payload) ?? {};
     data = _normalize(raw);
   } catch (e: any) {
-    return _wrapResponse(`Invalid payload: ${e.message}`, false, '');
+    return _wrapResponse(`Invalid payload: ${e.message}`, true, '');
   }
 
   const sequential = data.sequential;

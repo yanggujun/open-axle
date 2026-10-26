@@ -217,8 +217,8 @@ export function getRemoteServers(): RemoteServer[] {
   return servers;
 }
 
-export function validate(text: string): [TextType, string, string] {
-  const stripped = text.trim();
+export function validate(input: string): [TextType, string, string] {
+  const stripped = input.trim();
   try {
     const parser = new JsonParser();
     parser.parse(stripped);
@@ -231,10 +231,15 @@ export function validate(text: string): [TextType, string, string] {
       const beginning = stripped.substring(0, jsonStartPos).trim();
       const ending = stripped.substring(jsonEndPos).trim();
       payload = stripped.substring(jsonStartPos, jsonEndPos).trim();
-      text = `${beginning}\n${ending}`;
+      if (beginning) {
+        text += `${beginning}\n`
+      }
+      if (ending) {
+        text += ending;
+      }
     }
 
-    return [textType, payload, text];
+    return [textType, payload, text.trim()];
   } catch (error) {
     return [TextType.MALFORMATED_JSON, '', ''];
   }

@@ -2,7 +2,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { exec, ExecOptions } from 'child_process';
 import { Client } from 'ssh2';
-import { buildConnectConfig, ExecutionResponse, extractJson, getSequential, Runtime, shellQuote } from '../../common/common';
+import { buildConnectConfig, ExecutionResponse, extractJson, fenceCode, getSequential, Runtime, shellQuote } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -325,13 +325,15 @@ async function runCommandFromPayloadRemote(
       const cappedStdout = stdout.substring(0, MAX_OUTPUT_SIZE);
       const cappedStderr = stderr.substring(0, MAX_OUTPUT_SIZE);
 
-      let out = `return code: ${returncode}\n\n`;
+      let out = fenceCode('bash', data.command);
+      out += `return code: ${returncode}\n\n`;
       if (cappedStdout) {
-        out += cappedStdout + '\n';
+        out += "stdout:\n"
+        out += fenceCode('bash', cappedStdout);
       }
       if (cappedStderr) {
-        out += 'stderr\n';
-        out += cappedStderr;
+        out += 'stderr:\n';
+        out += fenceCode('bash', cappedStderr);
       }
 
       const seq = data.sequential;

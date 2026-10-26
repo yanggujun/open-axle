@@ -19,6 +19,7 @@ Checkout the code into local
 
 ### Start GUI
 ```bash
+npm install
 npm run build
 npm start
 ```

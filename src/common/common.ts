@@ -19,13 +19,15 @@ export class ExecutionResponse {
   sequential: boolean;
   print: boolean;
   format: string;
+  mimeType: string;
 
-  constructor(content: string, prompt: string, sequential: boolean = false, print: boolean = false, format: string = '') {
+  constructor(content: string, prompt: string, sequential: boolean = false, print: boolean = false, format: string = '', mimeType: string = '') {
     this.content = content;
     this.prompt = prompt;
     this.sequential = sequential;
     this.print = print;
     this.format = format;
+    this.mimeType = mimeType;
   }
 
   /**
@@ -257,46 +259,422 @@ export async function remoteIsInGitRepo(conn: Client, dir: string, filePath: str
   const ls = await execCommand(conn, `cd ${shellQuote(dir)} && git ls-files --error-unmatch ${shellQuote(filePath)}`);
   return ls.code === 0;
 }
-/**
- * Reads a file given its path and, if the file extension corresponds to a
- * known code format, wraps the file content with a markdown code fence using
- * the appropriate language tag and returns the fenced content.
- *
- * @param filePath The path of the file to read.
- * @returns The file content wrapped in a code fence (with the language tag) if
- *          the extension is a known code format; otherwise an empty string.
- */
+/** Mapping of common text/code extensions to a MIME type (default 'text/plain'). */
+export const TEXT_EXTENSION_MIME_MAP: Record<string, string> = {
+  '.json': 'application/json',
+  '.xml': 'application/xml',
+  '.dtd': 'application/xml',
+  '.xsd': 'application/xml',
+  '.html': 'text/html',
+  '.htm': 'text/html',
+  '.css': 'text/css',
+  '.csv': 'text/csv',
+  '.md': 'text/markdown',
+  '.yaml': 'text/yaml',
+  '.yml': 'text/yaml',
+  '.svg': 'image/svg+xml'
+};
 
-export function readFile(filePath: string, startLine: number = 0, endLine: number = 0, maxBytes: number = 0): string {
-  const ext = path.extname(filePath).toLowerCase();
-  const language = CODE_EXTENSION_LANGUAGE_MAP[ext];
+/**
+ * Mapping of PURE-TEXT file extensions (plain prose / logs / config with no
+ * dedicated code-fence language) to a MIME type. These files carry no syntax
+ * highlighting and are read as-is; CSV/TSV are additionally rendered as a
+ * markdown table (see {@link delimitedToMarkdownTable}).
+ */
+export const PURE_TEXT_EXTENSION_MIME_MAP: Record<string, string> = {
+  '.txt': 'text/plain',
+  '.text': 'text/plain',
+  '.log': 'text/plain',
+  '.csv': 'text/csv',
+  '.tsv': 'text/tab-separated-values',
+  '.ini': 'text/plain',
+  '.cfg': 'text/plain',
+  '.conf': 'text/plain',
+  '.properties': 'text/plain',
+  '.env': 'text/plain',
+  '.toml': 'text/plain',
+  '.rst': 'text/x-rst',
+  '.nfo': 'text/plain',
+  '.list': 'text/plain',
+  '.diff': 'text/x-diff',
+  '.patch': 'text/x-diff'
+};
+
+/**
+ * Unified result of reading a file, shared by both {@link readFile} (text/code)
+ * and {@link readImageFile} (images).
+ *
+ * - For text/code files `content` holds the file's text (code-fenced when the
+ *   extension is a known code format) and `uri` is a `data:` URI of that text.
+ * - For image files `content` holds the raw base64 string and `uri` is a
+ *   ready-to-embed `data:` URI.
+ */
+export interface FileReadResult {
+  /** Primary payload: text file -> text content; image file -> base64 string. */
+  content: string;
+  /** Detected format name (e.g. 'typescript', 'png', 'jpeg', 'svg'). */
+  format: string;
+  /** MIME type (e.g. 'text/plain', 'image/png', 'image/svg+xml'). */
+  mimeType: string;
+}
+
+/** Number of leading bytes inspected when sniffing an unknown file type. */
+const TEXT_SNIFF_BYTES = 8192;
+
+/**
+ * Heuristically decides whether a file (typically with an UNKNOWN extension)
+ * is a text file. Reads a leading byte chunk and rejects it when it contains
+ * NUL bytes (a strong binary signal) or too many undecodable / non-printable
+ * bytes.
+ *
+ * @param filePath The path of the file to inspect.
+ * @returns true when the file looks like text; false otherwise.
+ */
+export function isProbablyTextFile(filePath: string): boolean {
+  let buf: Buffer;
+  try {
+    const fd = fs.openSync(filePath, 'r');
+    try {
+      const chunk = Buffer.alloc(TEXT_SNIFF_BYTES);
+      const read = fs.readSync(fd, chunk, 0, TEXT_SNIFF_BYTES, 0);
+      buf = chunk.subarray(0, read);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return false;
+  }
+
+  return isProbablyTextBuffer(buf);
+}
+
+/** Splits a single delimited (CSV/TSV) line into fields, honoring quotes. */
+export function parseDelimitedLine(line: string, delim: string): string[] {
+  const fields: string[] = [];
+  let cur = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQuotes) {
+      if (ch === '"') {
+        if (line[i + 1] === '"') {
+          cur += '"';
+          i++;
+        } else {
+          inQuotes = false;
+        }
+      } else {
+        cur += ch;
+      }
+    } else if (ch === '"') {
+      inQuotes = true;
+    } else if (ch === delim) {
+      fields.push(cur);
+      cur = '';
+    } else {
+      cur += ch;
+    }
+  }
+  fields.push(cur);
+  return fields;
+}
+
+/** Escapes a cell value for safe inclusion in a markdown table. */
+export function escapeMarkdownCell(value: string): string {
+  return value.replace(/\|/g, '\\|').replace(/\r?\n/g, ' ');
+}
+
+/**
+ * Renders delimited text (CSV/TSV) as a GitHub-flavored markdown table. The
+ * first row is treated as the header; column counts are normalized so ragged
+ * rows still produce a valid table.
+ */
+export function delimitedToMarkdownTable(text: string, delim: string): string {
+  const rows = text.split(/\r?\n/);
+  // Drop a single trailing empty row (files usually end with a newline).
+  while (rows.length > 0 && rows[rows.length - 1].trim() === '') {
+    rows.pop();
+  }
+  if (rows.length === 0) {
+    return '';
+  }
+  const parsed = rows.map((r) => parseDelimitedLine(r, delim));
+  const colCount = parsed.reduce((max, r) => Math.max(max, r.length), 0);
+  const pad = (r: string[]): string[] => {
+    const out = r.slice();
+    while (out.length < colCount) out.push('');
+    return out;
+  };
+  const header = pad(parsed[0]);
+  const body = parsed.slice(1).map(pad);
+  const lines: string[] = [];
+  lines.push('| ' + header.map(escapeMarkdownCell).join(' | ') + ' |');
+  lines.push('| ' + header.map(() => '---').join(' | ') + ' |');
+  for (const row of body) {
+    lines.push('| ' + row.map(escapeMarkdownCell).join(' | ') + ' |');
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Slices already-read text according to the shared line-range / maxBytes
+ * semantics used by BOTH the local and remote read paths.
+ */
+export function sliceText(text: string, startLine: number = 0, endLine: number = 0, maxBytes: number = 0): string {
+  if (endLine > 0 || startLine > 1) {
+    const lines = text.split(/\r?\n/);
+    const start = Math.max(1, startLine);
+    const end = endLine > 0 ? endLine : lines.length;
+    const endIdx = Math.min(end, lines.length);
+    return lines.slice(start - 1, endIdx).join('\n');
+  }
+  if (maxBytes > 0) {
+    return text.substring(0, maxBytes);
+  }
+  return text;
+}
+
+/**
+ * Builds a {@link FileReadResult} from already-read text for a file with the
+ * given extension. Known code formats are wrapped in a markdown code fence;
+ * CSV/TSV files are rendered as a markdown table.
+ */
+export function buildTextContentResult(ext: string, text: string): FileReadResult {
+  const language = CODE_EXTENSION_LANGUAGE_MAP[ext] || '';
 
   let content: string;
-  try {
-    if (endLine > 0 || startLine > 1) {
-      // Line-range read.
-      const full = fs.readFileSync(filePath, 'utf-8');
-      const lines = full.split(/\r?\n/);
-      const start = Math.max(1, startLine);
-      const end = endLine > 0 ? endLine : lines.length;
-      const endIdx = Math.min(end, lines.length);
-      content = lines.slice(start - 1, endIdx).join('\n');
-    } else if (maxBytes > 0) {
-      content = fs.readFileSync(filePath, 'utf-8').substring(0, maxBytes);
-    } else {
-      content = fs.readFileSync(filePath, 'utf-8');
+  let format: string;
+  if (ext === '.csv' || ext === '.tsv') {
+    const delim = ext === '.tsv' ? '\t' : ',';
+    content = delimitedToMarkdownTable(text, delim);
+    format = 'markdown';
+  } else if (ext === '.svg') {
+    content = text;
+    format = "svg";
+  } else {
+    content = '```' + language + '\n' + text + '\n```';
+    format = language;
+  }
+
+  const mimeType = TEXT_EXTENSION_MIME_MAP[ext] || PURE_TEXT_EXTENSION_MIME_MAP[ext] || 'text/plain';
+  return {
+    content,
+    format,
+    mimeType
+  };
+}
+
+/**
+ * Builds a {@link FileReadResult} from an already-read image buffer. `content`
+ * holds the raw base64 string and `uri` a ready-to-embed data URI. Throws when
+ * the extension is not a recognized image format.
+ */
+export function buildImageContentResult(ext: string, buffer: Buffer): FileReadResult {
+  const meta = IMAGE_EXTENSION_MIME_MAP[ext];
+  if (!meta) {
+    throw new Error(`Unsupported image format: ${ext || '(no extension)'}`);
+  }
+  const base64 = buffer.toString('base64');
+  return {
+    content: base64,
+    format: 'image',
+    mimeType: meta.mimeType
+  };
+}
+
+/** Heuristically decides whether an already-read buffer looks like text. */
+export function isProbablyTextBuffer(buf: Buffer): boolean {
+  if (buf.length === 0) {
+    return true;
+  }
+  if (buf.includes(0)) {
+    return false;
+  }
+  const decoded = buf.toString('utf-8');
+  let bad = 0;
+  for (const ch of decoded) {
+    if (ch === '\uFFFD') {
+      bad++;
     }
+  }
+  return decoded.length > 0 && bad / decoded.length < 0.1;
+}
+
+/**
+ * Buffer-based, file-type aware dispatcher shared by the local and remote read
+ * paths. Mirrors {@link readFile} but works on an already-read buffer so the
+ * very same logic runs against content fetched over SFTP.
+ *
+ *   1. image extension     -> {@link buildImageContentResult};
+ *   2. known text/code ext -> {@link buildTextContentResult} (after slicing);
+ *   3. unknown extension   -> sniff: text -> buildTextContentResult; binary
+ *                             -> not supported yet.
+ */
+export function buildFileResultFromBuffer(ext: string, buffer: Buffer, startLine: number = 0, endLine: number = 0, maxBytes: number = 0): FileReadResult {
+  // 1) Image files -> base64 result.
+  if (IMAGE_EXTENSION_MIME_MAP[ext]) {
+    return buildImageContentResult(ext, buffer);
+  }
+
+  // 2) Known text/code formats (code languages, structured text, pure text).
+  if (CODE_EXTENSION_LANGUAGE_MAP[ext] || TEXT_EXTENSION_MIME_MAP[ext] || PURE_TEXT_EXTENSION_MIME_MAP[ext]) {
+    const text = sliceText(buffer.toString('utf-8'), startLine, endLine, maxBytes);
+    return buildTextContentResult(ext, text);
+  }
+
+  // 3) Unknown extension: sniff the content to decide if it is text.
+  if (isProbablyTextBuffer(buffer)) {
+    const text = sliceText(buffer.toString('utf-8'), startLine, endLine, maxBytes);
+    return buildTextContentResult(ext, text);
+  }
+
+  // 4) Binary / unknown format: not supported yet.
+  // TODO: implement binary file handling here when needed.
+  throw new Error(`Unsupported (binary) file format: ${ext || '(no extension)'}`);
+}
+
+/** Promisified SFTP readFile returning the raw bytes as a Buffer. */
+export function sftpReadFileBuffer(sftp: any, remotePath: string): Promise<Buffer> {
+  return new Promise<Buffer>((resolve, reject) => {
+    sftp.readFile(remotePath, (err: any, data: Buffer) => {
+      if (err) reject(err);
+      else resolve(data);
+    });
+  });
+}
+
+/**
+ * Reads a text/code file. Known code formats are wrapped in a markdown code
+ * fence; CSV/TSV files are rendered as a markdown table. This is the
+ * low-level text reader; {@link readFile} is the file-type aware entry point
+ * that dispatches here for text/code files.
+ *
+ * @param filePath The path of the file to read.
+ * @returns A {@link FileReadResult} with the `content`, the detected `format`
+ *          (code-fence language tag, or 'markdown' for CSV/TSV tables), the
+ *          `mimeType` and a `uri`.
+ */
+export function readTextFile(filePath: string, startLine: number = 0, endLine: number = 0, maxBytes: number = 0): FileReadResult {
+  const ext = path.extname(filePath).toLowerCase();
+
+  let fullText: string;
+  try {
+    fullText = fs.readFileSync(filePath, 'utf-8');
   } catch (error) {
     throw new Error(`Failed to read file ${filePath}: ${error}`);
   }
 
-  if (!language) {
-    // Not a known code format: return the raw file content directly.
-    return content;
+  return buildTextContentResult(ext, sliceText(fullText, startLine, endLine, maxBytes));
+}
+
+/**
+ * Single entry point to read a file. Dispatches on the file type:
+ *   1. image extensions      -> {@link readImageFile} (base64 result);
+ *   2. known text/code exts  -> {@link readTextFile};
+ *   3. unknown extensions    -> sniff the content: text files go to
+ *                               {@link readTextFile}; binary files are not
+ *                               supported yet.
+ *
+ * @param filePath  The path of the file to read.
+ * @param startLine 1-based start line (text files only).
+ * @param endLine   1-based inclusive end line (text files only).
+ * @param maxBytes  Maximum bytes to read (text files only).
+ * @returns A unified {@link FileReadResult}.
+ */
+export function readFile(filePath: string, startLine: number = 0, endLine: number = 0, maxBytes: number = 0): FileReadResult {
+  const ext = path.extname(filePath).toLowerCase();
+
+  // 1) Image files -> base64 result.
+  if (IMAGE_EXTENSION_MIME_MAP[ext]) {
+    return readImageFile(filePath);
   }
 
-  return '```' + language + '\n' + content + '\n```';
+  // 2) Known text/code formats (code languages, structured text, pure text).
+  if (CODE_EXTENSION_LANGUAGE_MAP[ext] || TEXT_EXTENSION_MIME_MAP[ext] || PURE_TEXT_EXTENSION_MIME_MAP[ext]) {
+    return readTextFile(filePath, startLine, endLine, maxBytes);
+  }
+
+  // 3) Unknown extension: sniff the content to decide if it is text.
+  if (isProbablyTextFile(filePath)) {
+    return readTextFile(filePath, startLine, endLine, maxBytes);
+  }
+
+  // 4) Binary / unknown format: not supported yet.
+  // TODO: implement binary file handling here when needed.
+  throw new Error(`Unsupported (binary) file format for ${filePath}: ${ext || '(no extension)'}`);
 }
+// ---------------------------------------------------------------------------
+// Image file reading (base64)
+// ---------------------------------------------------------------------------
+
+/**
+ * Mapping of known image file extensions to their canonical format name and
+ * MIME type.
+ */
+export const IMAGE_EXTENSION_MIME_MAP: Record<string, { format: string; mimeType: string; }> = {
+  '.png': { format: 'png', mimeType: 'image/png' },
+  '.apng': { format: 'apng', mimeType: 'image/apng' },
+  '.jpg': { format: 'jpeg', mimeType: 'image/jpeg' },
+  '.jpeg': { format: 'jpeg', mimeType: 'image/jpeg' },
+  '.jpe': { format: 'jpeg', mimeType: 'image/jpeg' },
+  '.jfif': { format: 'jpeg', mimeType: 'image/jpeg' },
+  '.gif': { format: 'gif', mimeType: 'image/gif' },
+  '.bmp': { format: 'bmp', mimeType: 'image/bmp' },
+  '.webp': { format: 'webp', mimeType: 'image/webp' },
+  '.tif': { format: 'tiff', mimeType: 'image/tiff' },
+  '.tiff': { format: 'tiff', mimeType: 'image/tiff' },
+  '.ico': { format: 'ico', mimeType: 'image/x-icon' },
+  '.cur': { format: 'ico', mimeType: 'image/x-icon' },
+  '.avif': { format: 'avif', mimeType: 'image/avif' },
+  '.heic': { format: 'heic', mimeType: 'image/heic' },
+  '.heif': { format: 'heif', mimeType: 'image/heif' }
+};
+
+
+/**
+ * Reads an image file into a base64 string together with its detected format.
+ *
+ * Returns the shared {@link FileReadResult}: `content` holds the raw base64
+ * string, `format`/`mimeType` describe the image, and `uri` is a ready-to-use
+ * `data:` URI.
+ *
+ * Supports the most popular raster image formats (png, jpeg, gif, bmp, webp,
+ * tiff, ico, avif, heic/heif, apng). SVG is intentionally NOT handled here:
+ * it is an XML text format and is read as plain text by {@link readFile} (and
+ * {@link buildFileResultFromBuffer} for remote files).
+ *
+ * @param filePath The path of the image file to read.
+ * @returns A {@link FileReadResult} containing the base64 `content`, the
+ *          canonical `format`, the `mimeType`, and a data `uri`.
+ * @throws Error if the extension is not a recognized image format or the file
+ *         cannot be read.
+ */
+export function readImageFile(filePath: string): FileReadResult {
+  const ext = path.extname(filePath).toLowerCase();
+  const meta = IMAGE_EXTENSION_MIME_MAP[ext];
+  if (!meta) {
+    throw new Error(`Unsupported image format for file ${filePath}: ${ext || '(no extension)'}`);
+  }
+
+  let buffer: Buffer;
+  try {
+    buffer = fs.readFileSync(filePath);
+  } catch (error) {
+    throw new Error(`Failed to read image file ${filePath}: ${error}`);
+  }
+
+  const base64 = buffer.toString('base64');
+  return {
+    content: base64,
+    format: 'image',
+    mimeType: meta.mimeType
+  };
+}
+
+export function buildImageUri(mimeType: string, base64: string) {
+  return `data:${mimeType};base64,${base64}`;
+}
+
 // ---------------------------------------------------------------------------
 // Code file reading with code-fence wrapping
 // ---------------------------------------------------------------------------
@@ -333,6 +711,9 @@ export const CODE_EXTENSION_LANGUAGE_MAP: Record<string, string> = {
   '.sql': 'sql',
   '.yaml': 'yaml',
   '.yml': 'yaml',
+  '.dtd': 'xml',
+  '.xsd': 'xml',
+  '.svg': 'xml'
 };
 // ---------------------------------------------------------------------------
 // JSON payload parsing (property-list format)
@@ -405,3 +786,6 @@ export type Runtime = {
   fullSkillConfig: FullSkillConfig;
 };
 
+export function fenceCode(lang: string, code: string) {
+  return `\`\`\`${lang}\n${code}\n\`\`\`\n`;
+}

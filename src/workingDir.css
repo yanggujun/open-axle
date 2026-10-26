@@ -289,3 +289,237 @@
 .dir-dialog-footer button.primary:hover {
   background-color: #81d4fa;
 }
+
+/* ================================================================== */
+/* Dock 'Files' tab - styled to mirror the 'Change Dir' dialog         */
+/* ------------------------------------------------------------------ */
+/* src/filesTab.ts renders the working directory in the right dock as  */
+/* a card that looks like .dir-dialog, its list like .dir-dialog-list  */
+/* and its rows like .dir-item -- but with the addition that it also   */
+/* lists FILES (folders first). These rules keep the two surfaces      */
+/* visually identical while letting the list scroll inside the dock.   */
+/* ================================================================== */
+
+/* The card: mirrors .dir-dialog (dark theme, rounded, bordered). */
+.files-card {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background-color: #252526;
+  color: #e0e0e0;
+  border: 1px solid #444;
+  border-radius: 5px;
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+  font-size: 14px;
+}
+
+/* Header: mirrors .dir-dialog-header (cyan bold title). */
+.files-card-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 16px;
+  background-color: #2d2d30;
+  border-bottom: 1px solid #444;
+  font-size: 15px;
+  font-weight: bold;
+  color: #4fc3f7;
+}
+
+/* Title takes the free space so the refresh button sits at the right. */
+.files-card-title {
+  flex: 1 1 auto;
+}
+
+/* Refresh action: mirrors the dialog close button styling (icon button). */
+.files-refresh {
+  margin-left: auto;
+  width: 28px;
+  height: 28px;
+  line-height: 1;
+  font-size: 18px;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #888;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.files-refresh:hover {
+  color: #fff;
+  background-color: #444;
+}
+
+/* Body: mirrors .dir-dialog-body (padding + gap, column, constrained). */
+.files-card-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: hidden;
+  padding: 4px 4px;
+  gap: 8px;
+  box-sizing: border-box;
+}
+
+/* Path row: the '...' (Change Dir) button on the LEFT of the current-dir
+   name box. A horizontal flex row keeps the button snug against the box. */
+.files-card-pathrow {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: stretch;
+  gap: 8px;
+  min-width: 0;
+}
+
+/* The '...' Change Dir button. Mirrors the dialog's footer button look
+   (dark, bordered, rounded) and sits to the LEFT of the path box. */
+.files-change-dir {
+  flex: 0 0 auto;
+  padding: 8px 12px;
+  font: inherit;
+  font-size: 14px;
+  line-height: 1;
+  color: #ccc;
+  background-color: #3c3c3c;
+  border: 1px solid #555;
+  border-radius: 6px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.files-change-dir:hover {
+  background-color: #4a4a4a;
+}
+
+/* Editable current-dir box: mirrors .dir-dialog-path's look but is an
+   <input>, so the user can type a directory and press Enter. flex:1 1 auto so
+   it fills the remaining width beside the '...' button. */
+.files-card-path {
+  flex: 1 1 auto;
+  min-width: 0;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  color: #e0e0e0;
+  background-color: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 8px 10px;
+  outline: none;
+  font-family: 'Consolas', 'Courier New', monospace;
+}
+
+/* Editable box focus: highlight the border in the app accent (no default
+   browser outline, which the outline:none above suppresses). */
+.files-card-path:focus {
+  border-color: #4fc3f7;
+}
+
+/* Placeholder text for the empty editable box. */
+.files-card-path::placeholder {
+  color: #6e6e6e;
+}
+
+/* Brief invalid state flashed when a typed path fails verification (the value
+   is reverted at the same time; see commitTypedPath in filesTab.ts). */
+.files-card-path.files-invalid {
+  border-color: #c62828;
+}
+
+/* Scrollable list: mirrors .dir-dialog-list; this is the scroll area that
+   lets the user scroll the listing within the dock panel. */
+.files-card-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  background-color: #1a1a1a;
+  border: 1px solid #444;
+  border-radius: 6px;
+  padding: 6px;
+  box-sizing: border-box;
+  scroll-padding-block: 6px;
+}
+
+/* Rows: mirror .dir-item, but as flex rows so a caret + icon + name align. */
+.files-item {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  box-sizing: border-box;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #e0e0e0;
+  padding: 8px 10px;
+  min-height: 34px;
+  line-height: 18px;
+  border-radius: 4px;
+  cursor: default;
+  font-size: 14px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Folder rows are clickable (expand/collapse). */
+.files-item.folder {
+  cursor: pointer;
+}
+
+.files-item.folder:hover {
+  background-color: #37373a;
+}
+
+/* Disclosure caret (folders only). */
+.files-caret {
+  flex: 0 0 auto;
+  width: 12px;
+  font-size: 12px;
+  color: #888;
+  text-align: center;
+}
+
+/* Folder / file glyph. */
+.files-item-icon {
+  flex: 0 0 auto;
+  font-size: 14px;
+  line-height: 1;
+}
+
+/* Name takes the free space and truncates with an ellipsis when too long. */
+.files-item-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Nested children of an expanded folder: indented to show hierarchy. */
+.files-children {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-left: 16px;
+  border-left: 1px solid #333;
+  padding-left: 4px;
+}
+
+/* Hint / placeholder lines (unavailable, empty, remote, etc.). */
+.files-hint {
+  color: #9e9e9e;
+  font-size: 13px;
+  line-height: 1.5;
+  padding: 8px 10px;
+}

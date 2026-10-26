@@ -98,7 +98,7 @@ function createFileFromPayload(payload: string | Record<string, any>, runtime?: 
     const raw = extractJson(payload) ?? {};
     data = _normalize(raw);
   } catch (e: any) {
-    return `Invalid payload: ${e.message}`;
+    return new ExecutionResponse(`Invalid payload: ${e.message}`, '', true, true);
   }
 
   const baseDir = runtime?.workingDir?.path || process.cwd();
@@ -115,7 +115,7 @@ function createFileFromPayload(payload: string | Record<string, any>, runtime?: 
 
   const blocked = _isBlockedPath(fullPath);
   if (blocked) {
-    return `Blocked path (contains '${blocked}'); refusing to write.`;
+    return new ExecutionResponse(`Blocked path (contains '${blocked}'); refusing to write.`, '', false, true);
   }
 
   if (fs.existsSync(fullPath) && !data.overwrite) {
@@ -138,7 +138,7 @@ function createFileFromPayload(payload: string | Record<string, any>, runtime?: 
     const resp = `File ${fullPath} is created successfully.`;
     return new ExecutionResponse(resp, data.prompt, data.sequential, true);
   } catch (e: any) {
-    return `Failed to write file: ${e.message}`;
+    return new ExecutionResponse(`Failed to write file: ${e.message}`, '', false, true);
   }
 }
 

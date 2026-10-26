@@ -1,11 +1,12 @@
 import { Conduit } from './conduit';
-import { Model, ConversationMessage } from './model';
+import { Model, Attachment } from './model';
 import { discoverExecutors, validate, ExecutorMap, parseActionJson } from './executor';
-import { extractJson } from '../common/common';
+import { buildImageUri, extractJson } from '../common/common';
 import { ExecutionResponse } from '../common/common';
 import { getFullWorkingPath, getFullSkillConfig, parsePath } from './config';
 import { Runtime } from '../common/common';
 import { WorkingDir } from '../common/common';
+import { FullSkillConfig } from '../common/common';
 import { TextType } from './parser';
 import {logger} from './logger';
 import { ModelConfig } from './config';
@@ -18,7 +19,6 @@ export class AxleAgent {
   model: Model;
   prompt: AxlePrompt;
   executors: Promise<ExecutorMap>;
-  conversationHistory: ConversationMessage[] = [];
   conduit: Conduit;
   /**
    * Cached parsed representation of the current working directory. It is a
@@ -47,12 +47,11 @@ export class AxleAgent {
       this.prompt,
       undefined,
       undefined,
-      modelConfig.responses ?? false,
+      modelConfig.responses ?? false
     );
 
     logger.log(`starting ${this.modelName}`);
     this.executors = discoverExecutors(this.skillsFolder);
-    this.conversationHistory = [];
     this.conduit = conduit;
     const baseDir = modelConfig.workingDir ?? process.cwd();
     this.cd(baseDir);
@@ -122,6 +121,22 @@ export class AxleAgent {
   }
 
   /**
+   * Expose the agent's cached full skill configuration (ALL skill entries from
+   * `.skill.config`). The value is held on the agent's {@link Runtime}, which is
+   * rebuilt on every {@link AxleAgent.cd} call. This lets callers (e.g. the
+   * main-process IPC layer) reuse the agent's already-parsed config instead of
+   * re-reading `.skill.config` from disk. If the runtime has not been built yet
+   * (cd not called), it is built on demand; as a last resort the config is read
+   * directly so the method never returns `undefined`.
+   */
+  getFullSkillConfig(): FullSkillConfig {
+    if (!this.runtime) {
+      this.buildRuntime();
+    }
+    return this.runtime?.fullSkillConfig ?? getFullSkillConfig();
+  }
+
+  /**
    * Request the currently running continuous task loop to stop. This only
    * raises a flag; the talk() loop checks it at each iteration and breaks
    * cleanly at the next safe point. Safe to call at any time (also when the
@@ -144,12 +159,11 @@ export class AxleAgent {
 
   reload(): void {
     this.prompt.reloadSkills();
-    this.conversationHistory = [];
+    this.model.clear();
     this.conduit.send('\nSkills reloaded and conversation reset.\n');
   }
 
   clear(): void {
-    this.conversationHistory = [];
     this.model.clear();
     this.conduit.send('\nConversation history cleared.\n');
   }
@@ -160,7 +174,11 @@ export class AxleAgent {
     return skills;
   }
 
-  async talk(userInput: string): Promise<void> {
+  async talk(input: { userinput: string; attachments?: { format: string; content: string }[] }): Promise<void> {
+    let userInput = input.userinput;
+    // Only the first 5 attachments are kept. They are attached to the first
+    // turn of the task loop; subsequent auto-prompt turns are text-only.
+    let currentAttachments: Attachment[] | undefined = input.attachments?.slice(0, 5);
     let followup = true;
     logger.log(`To ${this.modelName}: ${userInput}`);
     let attempt = 0;
@@ -178,10 +196,20 @@ export class AxleAgent {
         break;
       }
 
-      // Get response from agent
-      const response = await this.model.chat(userInput, this.conversationHistory);
+      // Get response from agent. Both APIs return the SAME shape:
+      // { text, binary }. `text` drives the normal flow; `binary`, when
+      // present (responses API image output), is forwarded to the UI.
+      const chatResult = await this.model.chat({ userinput: userInput, attachments: currentAttachments });
+      const response = chatResult.text;
 
       logger.log(`${this.modelName} Response: \n${response}`);
+
+      // If the model produced an image, push it to the UI as an 'image'
+      // message (rendered as a clickable bubble in the chat log).
+      if (chatResult.binary) {
+        const chatResultImageUri = buildImageUri('image/png', chatResult.binary);
+        this.conduit.send('', 'image', chatResultImageUri);
+      }
       const [textType, payload, text] = validate(response);
       logger.log(`Response format: ${textType}`);
 
@@ -216,16 +244,31 @@ export class AxleAgent {
       if (ExecutionResponse.isExecutionResponse(result)) {
         logger.log(`continue: ${result.sequential}`);
         const needPrint = result.print;
-        if (needPrint && needPrint === true) {
-          this.conduit.send(`${result.content}`, result.format);
+        let imageUri: string | undefined = undefined;
+        if (needPrint && needPrint === true && result.content) {
+          if (result.format === 'image') {
+            imageUri = buildImageUri(result.mimeType, result.content);
+            this.conduit.send('', result.format, imageUri);
+          } else {
+            this.conduit.send(`${result.content}`, result.format);
+          }
         }
 
         followup = result.sequential;
         if (followup) {
           const nextPrompt = result.prompt;
-          userInput = nextPrompt + '\n' + result.content;
+          userInput = nextPrompt + '\n';
+          let imageUri: string | undefined = undefined;
+          if (result.format === 'image') {
+            currentAttachments = [{ format: result.mimeType, content: result.content }];
+            imageUri = buildImageUri(result.mimeType, result.content);
+          } else {
+            userInput += result.content;
+            currentAttachments = undefined;
+          }
+
           logger.log(`Auto prompt: ${userInput}`);
-          this.conduit.send(userInput, 'md');
+          this.conduit.send(userInput, result.format, imageUri);
         } else {
           logger.log(`Result:\n${result.content}`);
         }
@@ -241,9 +284,6 @@ export class AxleAgent {
         }
       }
 
-      // Update conversation history
-      this.conversationHistory.push({ role: 'user', content: userInput });
-      this.conversationHistory.push({ role: 'assistant', content: response });
     }
 
     // Only announce completion when the loop actually finished on its own.

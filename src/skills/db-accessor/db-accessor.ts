@@ -15,7 +15,7 @@
  *   - exports execute() and ACTION_NAME
  */
 
-import { ExecutionResponse, extractJson, getSequential, Runtime } from '../../common/common';
+import { ExecutionResponse, extractJson, fenceCode, getSequential, Runtime } from '../../common/common';
 import { createDbExecutor } from '../../db/db';
 import type { DbConfig, DbType, DbExecutor } from '../../db/db';
 
@@ -349,17 +349,17 @@ async function runDbFromPayload(
     return `Failed to connect to database '${data.database}' (type ${config.type}): ${_mask(e.message, secret)}`;
   }
 
-  let out = '';
+  let out = fenceCode('sql', data.sql);
   try {
     if (data.isWrite) {
       const affected = await executor.nonQuery(data.sql);
-      out = `Return code: 0\n\n Database: ${data.database}\n\nType: write (${data.mutating.join(', ')})\n\n Timeout: ${data.timeout}s\n\n Affected rows: ${affected}\n\n`;
+      out += `Return code: 0\n\n Database: ${data.database}\n\nType: write (${data.mutating.join(', ')})\n\n Timeout: ${data.timeout}s\n\n Affected rows: ${affected}\n\n`;
     } else {
       const result = await executor.query(data.sql);
       const rows = Array.isArray(result.rows) ? result.rows : [];
       const limited = rows.slice(0, data.maxRows);
 
-      out = `Return code: 0\n\n Database: ${data.database}\n\nType: read timeout: ${data.timeout}s \n\nRow count: ${limited.length}\n\n `;
+      out += `Return code: 0\n\n Database: ${data.database}\n\nType: read timeout: ${data.timeout}s \n\nRow count: ${limited.length}\n\n `;
       if (rows.length > limited.length) {
         out += `Note: result truncated to max_rows=${data.maxRows} (total ${rows.length})\n\n`;
       }

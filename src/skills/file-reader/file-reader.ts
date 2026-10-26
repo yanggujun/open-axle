@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Runtime, ExecutionResponse, extractJson, getSequential, readFile, buildConnectConfig, connect, getSftp, sftpReadFile } from '../../common/common';
+import { Runtime, ExecutionResponse, extractJson, getSequential, readFile, buildConnectConfig, connect, getSftp, sftpReadFileBuffer, buildFileResultFromBuffer } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -110,7 +110,7 @@ function readFileFromPayload(payload: string | Record<string, any>, runtime?: Ru
     const raw = extractJson(payload) ?? {};
     data = _normalize(raw);
   } catch (e: any) {
-    return `Invalid payload: ${e.message}`;
+    return new ExecutionResponse(`Invalid payload: ${e.message}`, '', true, true);
   }
 
   const baseDir = runtime?.workingDir?.path || process.cwd();
@@ -136,7 +136,7 @@ function readFileFromPayload(payload: string | Record<string, any>, runtime?: Ru
   if (!fs.existsSync(fullPath)) {
     return new ExecutionResponse(
       `FILE NOT FOUND: ${fullPath}, PLEASE FIND THE FILE FIRST`,
-      data.prompt,
+      '',
       true,
       false
     );
@@ -145,61 +145,28 @@ function readFileFromPayload(payload: string | Record<string, any>, runtime?: Ru
     return `Path is not a regular file: ${fullPath}`;
   }
 
-  // Read the file.
-  let content: string;
+  // Read the file. readFile returns a unified FileReadResult (the same shape
+  // as readImageFile): `content` is the fenced text, `format` is the detected
+  // code-fence language tag.
+  let readResult: ReturnType<typeof readFile>;
   try {
-    content = readFile(fullPath, data.start_line, data.end_line, data.max_bytes);
+    readResult = readFile(fullPath, data.start_line, data.end_line, data.max_bytes);
   } catch (e: any) {
     return `Failed to read file: ${e.message}`;
   }
-
-  const ext = path.extname(fullPath).replace(/^\./, '');
+  const content = readResult.content;
 
   const seq = data.sequential;
   let nextPrompt = data.prompt;
   if (seq && data.prompt) {
     nextPrompt = `${data.prompt}\n\nFollowing is the content of file ${fullPath}:\n\n`;
   }
-  return new ExecutionResponse(content, nextPrompt, seq, !seq, ext);
+  return new ExecutionResponse(content, nextPrompt, seq, !seq, readResult.format, readResult.mimeType);
 }
 
 // ---------------------------------------------------------------------------
 // Remote (SSH) read-file operation
 // ---------------------------------------------------------------------------
-
-// Same extension -> code-fence language mapping used by the local readFile.
-const REMOTE_CODE_EXTENSION_LANGUAGE_MAP: Record<string, string> = {
-  '.java': 'java',
-  '.cpp': 'cpp',
-  '.cc': 'cpp',
-  '.cxx': 'cpp',
-  '.h': 'cpp',
-  '.hpp': 'cpp',
-  '.c': 'c',
-  '.py': 'python',
-  '.js': 'javascript',
-  '.jsx': 'javascript',
-  '.mjs': 'javascript',
-  '.cjs': 'javascript',
-  '.ts': 'typescript',
-  '.tsx': 'typescript',
-  '.go': 'go',
-  '.rs': 'rust',
-  '.rb': 'ruby',
-  '.php': 'php',
-  '.cs': 'csharp',
-  '.kt': 'kotlin',
-  '.swift': 'swift',
-  '.scala': 'scala',
-  '.sh': 'bash',
-  '.json': 'json',
-  '.xml': 'xml',
-  '.html': 'html',
-  '.css': 'css',
-  '.sql': 'sql',
-  '.yaml': 'yaml',
-  '.yml': 'yaml',
-};
 
 async function readFileFromPayloadRemote(
   payload: string | Record<string, any>,
@@ -245,9 +212,9 @@ async function readFileFromPayloadRemote(
     conn = await connect(connectConfig);
     const sftp = await getSftp(conn);
 
-    let raw: string;
+    let buffer: Buffer;
     try {
-      raw = await sftpReadFile(sftp, fullPath);
+      buffer = await sftpReadFileBuffer(sftp, fullPath);
     } catch {
       return new ExecutionResponse(
         `FILE NOT FOUND: ${fullPath}, PLEASE FIND THE FILE FIRST`,
@@ -257,34 +224,23 @@ async function readFileFromPayloadRemote(
       );
     }
 
-    // Reproduce local readFile line-range / maxBytes semantics.
-    let content: string;
-    if (data.end_line > 0 || data.start_line > 1) {
-      const allLines = raw.split(/\r?\n/);
-      const start = Math.max(1, data.start_line);
-      const end = data.end_line > 0 ? data.end_line : allLines.length;
-      const endIdx = Math.min(end, allLines.length);
-      content = allLines.slice(start - 1, endIdx).join('\n');
-    } else if (data.max_bytes > 0) {
-      content = raw.substring(0, data.max_bytes);
-    } else {
-      content = raw;
-    }
-
+    // Use the SAME file-type aware logic as the local path (shared via
+    // common.ts): images -> base64, code -> code fence, CSV/TSV -> markdown
+    // table, unknown text -> text, binary -> not supported yet.
     const extWithDot = path.posix.extname(fullPath).toLowerCase();
-    const language = REMOTE_CODE_EXTENSION_LANGUAGE_MAP[extWithDot];
-    if (language) {
-      content = '```' + language + '\n' + content + '\n```';
+    let readResult: ReturnType<typeof buildFileResultFromBuffer>;
+    try {
+      readResult = buildFileResultFromBuffer(extWithDot, buffer, data.start_line, data.end_line, data.max_bytes);
+    } catch (e: any) {
+      return `Failed to read remote file: ${e.message}`;
     }
-
-    const ext = extWithDot.replace(/^\./, '');
 
     const seq = data.sequential;
     let nextPrompt = data.prompt;
     if (seq && data.prompt) {
       nextPrompt = `${data.prompt}\n\nFollowing is the content of file ${fullPath}:\n\n`;
     }
-    return new ExecutionResponse(content, nextPrompt, seq, !seq, ext);
+    return new ExecutionResponse(readResult.content, nextPrompt, seq, !seq, readResult.format, readResult.mimeType);
   } catch (e: any) {
     return `Failed to read remote file over SSH: ${e.message}`;
   } finally {

@@ -1,12 +1,14 @@
 import { app, BrowserWindow, ipcMain, dialog } from 'electron';
 import * as fs from 'fs';
+import * as path from 'path';
 import { AxleAgent } from './core/agent';
 import { QueuedConduit, Protocol } from './core/conduit';
 import { LlmConfig, ModelConfig } from './core/config';
 import { logger } from './core/logger';
 import { Tail } from './core/tail';
-import { getRemoteServers } from './core/executor';
-import { getSkillConfig, parsePath } from './core/config';
+import { getRemoteServers, resolveSkillConfig } from './core/executor';
+import { parsePath } from './core/config';
+import { sshExec, SshTarget } from './core/remote';
 import { execFile } from 'child_process';
 
 // Webpack entry points (defined by electron-forge's webpack plugin)
@@ -15,6 +17,31 @@ declare const MAIN_WINDOW_PRELOAD_WEBPACK_ENTRY: string;
 
 // Module-scoped references so the window/agents are not garbage-collected.
 let win: BrowserWindow | null = null;
+
+// ---- Filesystem change watchers (right-dock 'Files' tab) ----
+//
+// The renderer cannot touch the filesystem, so directory watching happens
+// HERE, in the main process. Each watcher observes exactly ONE directory
+// (non-recursive), so only the current working directory and the currently
+// EXPANDED sub-directories are observed. A Map keyed by the resolved absolute
+// path dedupes watchers; `origDir` preserves the exact string the renderer used
+// so the change event carries a key the renderer can look up again.
+interface DirWatch {
+  watcher: fs.FSWatcher;
+  timer: NodeJS.Timeout | null;
+  webContents: Electron.WebContents;
+  origDir: string;
+}
+const dirWatchers = new Map<string, DirWatch>();
+
+/** Close and forget every directory watcher (window close / app quit). */
+function stopAllDirWatchers(): void {
+  for (const entry of dirWatchers.values()) {
+    if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+    try { entry.watcher.close(); } catch { /* already gone */ }
+  }
+  dirWatchers.clear();
+}
 
 // One agent per configured LLM model. The key is the model name from .llm.config.
 const agents = new Map<string, AxleAgent>();
@@ -33,7 +60,12 @@ function createWindow(): void {
 
   win.loadURL(MAIN_WINDOW_WEBPACK_ENTRY);
 
+  // Default the window to maximized (max size) on startup.
+  win.maximize();
+
   win.on('closed', () => {
+    // Release every filesystem watcher the 'Files' tab opened.
+    stopAllDirWatchers();
     win = null;
   });
 }
@@ -156,10 +188,62 @@ function registerIpc(): void {
 
   // ---- Per-tab chat / control IPC ----
 
-  ipcMain.handle('axle:talk', (_e, text: string, modelName?: string) => {
+  ipcMain.handle('axle:talk', (_e, text: string, modelName?: string, attachments?: { format: string; content: string }[]) => {
     const agent = resolveAgent(modelName);
     if (agent) {
-      agent.talk(text);
+      agent.talk({ userinput: text, attachments });
+    }
+  });
+
+  // Save a model-returned image (given as an image data URL) into the agent's
+  // current working directory. The renderer is sandboxed and cannot touch the
+  // filesystem, so the write happens here. Remote (ssh://) working dirs are
+  // not supported and are reported back to the caller.
+  ipcMain.handle('axle:saveImage', (_e, dataUrl: string, modelName?: string) => {
+    try {
+      if (!dataUrl || typeof dataUrl !== 'string') {
+        return { ok: false, error: 'No image data provided' };
+      }
+
+      // Resolve the target directory from the agent's working directory.
+      const workingDirStr = resolveAgent(modelName)?.getCwd() ?? process.cwd();
+      const parsed = parsePath(workingDirStr);
+      if (parsed.kind === 'remote') {
+        return { ok: false, error: 'Saving images to a remote working directory is not supported yet.' };
+      }
+      const dir = parsed.path;
+
+      // Parse `data:image/<type>;base64,<payload>`.
+      const match = /^data:(image\/[a-zA-Z0-9.+-]+);base64,([\s\S]*)$/.exec(dataUrl);
+      if (!match) {
+        return { ok: false, error: 'Unsupported image format (expected a base64 image data URL)' };
+      }
+      const mime = match[1].toLowerCase();
+      const base64 = match[2];
+
+      // Derive the file extension from the mime type.
+      let ext = 'png';
+      if (mime === 'image/png') ext = 'png';
+      else if (mime === 'image/jpeg' || mime === 'image/jpg') ext = 'jpg';
+      else if (mime === 'image/webp') ext = 'webp';
+      else if (mime === 'image/gif') ext = 'gif';
+      else if (mime === 'image/svg+xml') ext = 'svg';
+      else ext = (mime.split('/')[1] || 'png').replace(/[^a-z0-9]/g, '') || 'png';
+
+      // Timestamped, unique-enough file name.
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const stamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}-${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      const fileName = `image-${stamp}.${ext}`;
+      const fullPath = path.join(dir, fileName);
+
+      fs.writeFileSync(fullPath, Buffer.from(base64, 'base64'));
+
+      return { ok: true, path: fullPath, fileName };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('[axle] Failed to save image:', msg);
+      return { ok: false, error: msg };
     }
   });
 
@@ -249,6 +333,36 @@ function registerIpc(): void {
     }
   });
 
+  // List a LOCAL directory's entries as { name, type } for BOTH files and
+  // folders, in a stable order (folders first, then files). Used by the
+  // right-side dock's 'Files' tab to render the working directory's
+  // sub-folders and files as a tree.
+  ipcMain.handle('axle:listEntries', (_e, dir: string) => {
+    try {
+      if (!dir) return [];
+      // Remote (ssh://) paths are not on the local filesystem; the 'Files' tab
+      // reports them as unavailable rather than attempting a local read.
+      const parsed = parsePath(dir);
+      if (parsed.kind === 'remote') {
+        return [];
+      }
+      const entries = fs.readdirSync(parsed.path, { withFileTypes: true });
+      const mapped = entries.map((e) => ({
+        name: e.name,
+        type: (e.isDirectory() ? 'folder' : 'file') as 'folder' | 'file',
+      }));
+      // Folders first, then files; each group sorted case-insensitively.
+      mapped.sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'folder' ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      });
+      return mapped;
+    } catch (error) {
+      console.error('[axle] Failed to list entries:', error);
+      return [];
+    }
+  });
+
   // Read the persisted working directory for a model.
   ipcMain.handle('axle:getWorkingDir', (_e, modelName: string) => {
     try {
@@ -300,20 +414,25 @@ function registerIpc(): void {
   // exactly like the local tab. `serverName` matches a RemoteServer.name from
   // getRemoteServers(); the SSH connection details come from getSkillConfig.
   // When `remotePath` is empty we start from the login (home) directory.
-  ipcMain.handle('axle:listRemoteDir', async (_e, serverName: string, remotePath?: string) => {
+  ipcMain.handle('axle:listRemoteDir', async (_e, serverName: string, remotePath?: string, includeFiles?: boolean, modelName?: string) => {
     try {
-      const servers = getRemoteServers();
-      const server = servers.find((s) => s.name === serverName);
-      if (!server) {
+      // Resolve the SSH connection details from the AGENT's cached full skill
+      // config (the agent's Runtime already holds the parsed `.skill.config`),
+      // so `.skill.config` is not re-read on every SSH connection. Prefer the
+      // 'ssh' skill entry, fall back to 'scp'.
+      const skillConfig = resolveAgent(modelName)?.getFullSkillConfig();
+      let cfg = skillConfig ? resolveSkillConfig(skillConfig, 'ssh', serverName) : null;
+      if (!cfg || Object.keys(cfg).length === 0) {
+        cfg = skillConfig ? resolveSkillConfig(skillConfig, 'scp', serverName) : null;
+      }
+      if (!cfg || Object.keys(cfg).length === 0) {
         return { path: '', dirs: [], error: `Unknown remote server: ${serverName}` };
       }
 
-      // Resolve the raw SSH connection details from .skill.config.
-      const cfg = getSkillConfig(server.skill, server.name) || {};
-      const host = cfg.host || server.host || '';
-      const port = cfg.port || server.port || '22';
-      const user = cfg.user_name || server.userName || '';
-      const authType = cfg.auth_type || server.authType || 'password';
+      const host = cfg.host || '';
+      const port = cfg.port || '22';
+      const user = cfg.user_name || '';
+      const authType = cfg.auth_type || 'password';
       const keyFile = cfg.key_file || '';
       const password = cfg.pass || '';
 
@@ -329,57 +448,22 @@ function registerIpc(): void {
       // Default to the login (home) dir when no path is supplied. `cd` with no
       // argument goes home; otherwise we cd into the (single-quoted) path.
       const dirExpr = remotePath ? `cd ${quoteRemotePath(remotePath)}` : 'cd';
-      const remoteCmd = `${dirExpr} && pwd && ls -1Ap | grep '/$' | sed 's#/$##'`;
+      // NOTE: with includeFiles=true we deliberately KEEP the trailing '/'
+      // that `ls -p` appends to DIRECTORY names, so the renderer can tell
+      // folders (name ends with '/') apart from files (name does not) and show
+      // the correct icon per entry. Without includeFiles we only want dirs, so
+      // we filter to names ending in '/' and strip that marker.
+      const remoteCmd = includeFiles
+        ? `${dirExpr} && pwd && ls -1Ap`
+        : `${dirExpr} && pwd && ls -1Ap | grep '/$' | sed 's#/$##'`;
 
-      // Run the command over SSH with the existing `ssh2` dependency instead of
-      // spawning the system `ssh` binary (replaces the removed sshExec helper).
-      const { Client } = require('ssh2');
-      const stdout = await new Promise<string>((resolve, reject) => {
-        const conn = new Client();
-        let out = '';
-        let errOut = '';
-        conn.on('ready', () => {
-          conn.exec(remoteCmd, (err: Error | undefined, stream: any) => {
-            if (err) {
-              conn.end();
-              reject(err);
-              return;
-            }
-            stream
-              .on('close', (code: number) => {
-                conn.end();
-                if (code && code !== 0 && !out) {
-                  reject(new Error(errOut || `Remote command exited with code ${code}`));
-                  return;
-                }
-                resolve(out);
-              })
-              .on('data', (chunk: Buffer) => {
-                out += chunk.toString();
-              });
-            stream.stderr.on('data', (chunk: Buffer) => {
-              errOut += chunk.toString();
-            });
-          });
-        });
-        conn.on('error', (err: Error) => reject(err));
-
-        const connectConfig: any = {
-          host,
-          port: Number(port) || 22,
-          username: user,
-          readyTimeout: 20000,
-        };
-        if (authType === 'key' && keyFile) {
-          connectConfig.privateKey = fs.readFileSync(keyFile);
-          if (password) {
-            connectConfig.passphrase = password;
-          }
-        } else {
-          connectConfig.password = password;
-        }
-        conn.connect(connectConfig);
-      });
+      // Run the command over a CACHED SSH connection (see src/core/remote.ts)
+      // instead of opening a new one per listing. The connection is kept open
+      // for the next call and automatically replaced when it has dropped;
+      // sshExec retries the command exactly once over a fresh connection if
+      // the cached one turned out to be dead.
+      const target: SshTarget = { host, port, user, authType, keyFile, password };
+      const stdout = await sshExec(target, remoteCmd);
 
       const lines = stdout.split(/\r?\n/).filter((l) => l.length > 0);
       const resolvedPath = lines.length > 0 ? lines[0] : (remotePath || '');
@@ -390,6 +474,86 @@ function registerIpc(): void {
       console.error('[axle] Failed to list remote dir:', msg);
       return { path: '', dirs: [], error: msg };
     }
+  });
+
+  // ---- Filesystem change watching (right-dock 'Files' tab) ----
+  //
+  // The 'Files' tab watches ONLY the current working directory and the
+  // sub-directories the user has EXPANDED. Each watch observes a single
+  // directory (non-recursive); the renderer adds a watch when a folder row is
+  // expanded and removes it (plus all its expanded descendants) when it is
+  // collapsed. Changes are debounced per directory (~200ms) to coalesce the
+  // burst of events an editor/save produces, then pushed to the renderer over
+  // 'axle:fsChanged' so it can re-list just that directory.
+  const FS_DEBOUNCE_MS = 200;
+
+  ipcMain.handle('axle:watchDir', (e, dir: string): boolean => {
+    try {
+      if (!dir) return false;
+      // Remote (ssh://) paths have no local OS watcher; ignore them.
+      const parsed = parsePath(dir);
+      if (parsed.kind === 'remote') return false;
+
+      const abs = path.resolve(parsed.path);
+      // Already watching: keep the existing watcher (deduped by resolved path).
+      if (dirWatchers.has(abs)) return true;
+
+      const sender = e.sender;
+      const watcher = fs.watch(abs, { persistent: false }, () => {
+        const entry = dirWatchers.get(abs);
+        if (!entry) return;
+        // Coalesce rapid events into a single notification.
+        if (entry.timer) clearTimeout(entry.timer);
+        entry.timer = setTimeout(() => {
+          entry.timer = null;
+          if (!entry.webContents.isDestroyed()) {
+            entry.webContents.send('axle:fsChanged', { dir: entry.origDir });
+          }
+        }, FS_DEBOUNCE_MS);
+      });
+
+      watcher.on('error', () => {
+        // The directory was most likely deleted or renamed: drop quietly.
+        const entry = dirWatchers.get(abs);
+        if (entry) {
+          if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+          try { entry.watcher.close(); } catch { /* already gone */ }
+          dirWatchers.delete(abs);
+        }
+      });
+
+      dirWatchers.set(abs, { watcher, timer: null, webContents: sender, origDir: dir });
+      return true;
+    } catch (error) {
+      console.error('[axle] Failed to watch dir:', error);
+      return false;
+    }
+  });
+
+  ipcMain.handle('axle:unwatchDir', (_e, dir: string): boolean => {
+    try {
+      if (!dir) return false;
+      const parsed = parsePath(dir);
+      if (parsed.kind === 'remote') return false;
+      const abs = path.resolve(parsed.path);
+      const entry = dirWatchers.get(abs);
+      if (entry) {
+        if (entry.timer) { clearTimeout(entry.timer); entry.timer = null; }
+        try { entry.watcher.close(); } catch { /* already gone */ }
+        dirWatchers.delete(abs);
+      }
+      return true;
+    } catch (error) {
+      console.error('[axle] Failed to unwatch dir:', error);
+      return false;
+    }
+  });
+
+  // Stop EVERY directory watcher (used when the Files tab is disposed or the
+  // working directory changes) so no stale watchers linger.
+  ipcMain.handle('axle:unwatchAll', (): boolean => {
+    stopAllDirWatchers();
+    return true;
   });
 
   // ---- Log viewer (tail -f) ----
@@ -521,4 +685,10 @@ app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+// Ensure every directory watcher opened by the 'Files' tab is released when the
+// application quits (also covers macOS, where window-all-closed does not quit).
+app.on('before-quit', () => {
+  stopAllDirWatchers();
 });
