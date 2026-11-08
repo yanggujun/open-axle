@@ -4,10 +4,10 @@ import * as os from 'os';
 import { app } from 'electron';
 import { logger } from './logger';
 import { execCommand } from '../common/common';
-import { connect } from '../common/common';
-import { buildConnectConfig } from '../common/common';
 import { WorkingDir } from '../common/common';
-import { Client } from 'ssh2';
+import { shellQuote } from '../common/common';
+import { SshTarget } from './remote';
+import { buildSshCacheKey, buildSshConnectConfig, getSshConn } from './remote';
 
 /**
  * AxlePrompt encapsulates the system-prompt assembly and skill management
@@ -23,6 +23,13 @@ export class AxlePrompt {
   selectedSkills: string[] = [];
   private osPrompt: string | null = null;
   private _cachedSystemPrompt: string | null = null;
+
+  /**
+   * Local-side prompt state. `projectPrompts` holds the Markdown prompt files
+   * loaded from `<workingDir>/.axle/*.md` by `buildDirPrompt`; each entry is
+   * shaped as `{ name: <file name>, content: <file content> }`.
+   */
+  local: { projectPrompts: Array<{ name: string; content: string }> } = { projectPrompts: [] };
 
   constructor(skillsFolder: string = 'skills') {
     this.skillsFolder = skillsFolder;
@@ -96,6 +103,7 @@ export class AxlePrompt {
       this.osPrompt = await this._detectRemoteOsPrompt(workingDir);
     }
     logger.log(`Current OS: ${this.osPrompt}`);
+    this.buildDirPrompt(workingDir);
     this._invalidateCache();
   }
 
@@ -106,6 +114,21 @@ export class AxlePrompt {
    * shared SSH helpers from executor.ts, reusing the server configuration
    * resolved on the remote WorkingDir.
    */
+  /**
+   * Map a resolved skill-config server entry onto the SshTarget descriptor
+   * consumed by the cached connection manager in remote.ts.
+   */
+  private _toSshTarget(serverName: string, server: Record<string, string>): SshTarget {
+    return {
+      host: server.host || serverName,
+      port: server.port ? parseInt(server.port, 10) : 22,
+      user: server.user_name || server.userName || server.user || '',
+      authType: (server.auth_type || server.authType || 'password').toLowerCase(),
+      keyFile: server.key_file || server.keyFile || '',
+      password: server.pass || ''
+    };
+  }
+
   private async _detectRemoteOsPrompt(
     workingDir: { serverName: string; path: string; server: Record<string, string> | null }
   ): Promise<string> {
@@ -116,9 +139,11 @@ export class AxlePrompt {
       return `remote server '${serverName}' (OS unknown)`;
     }
 
-    let conn: Client | null = null;
     try {
-      conn = await connect(buildConnectConfig(serverName, server));
+      // Reuse the cached connection from remote.ts: it owns the lifecycle of
+      // the client, so it must NOT be closed here.
+      const target = this._toSshTarget(serverName, server);
+      const conn = await getSshConn(buildSshCacheKey(target), buildSshConnectConfig(target));
 
       // Prefer PRETTY_NAME from /etc/os-release (e.g. "Ubuntu 22.04.3 LTS").
       let osType = '';
@@ -163,15 +188,134 @@ export class AxlePrompt {
     } catch (e: any) {
       logger.log(`Failed to detect OS on remote server '${serverName}': ${e}`);
       return '';
-    } finally {
-      if (conn) {
-        try {
-          conn.end();
-        } catch {
-          // ignore close errors
-        }
+    }
+  }
+
+
+  /** Convenience accessor for `local.projectPrompts`. */
+  get projectPrompts(): Array<{ name: string; content: string }> {
+    return this.local.projectPrompts;
+  }
+
+  /**
+   * Load all Markdown prompt files found in the `.axle` folder of the given
+   * working directory into `projectPrompts`. Mirrors `buildOsPrompt`: it works
+   * for both local and remote (SSH) working directories.
+   */
+  async buildDirPrompt(workingDir: WorkingDir): Promise<void> {
+    this.local.projectPrompts = [];
+
+    try {
+      if (!workingDir || workingDir.kind === 'local') {
+        const baseDir = workingDir && workingDir.path ? workingDir.path : process.cwd();
+        this.local.projectPrompts = this._readLocalProjectPrompts(path.join(baseDir, '.axle'));
+      } else {
+        this.local.projectPrompts = await this._readRemoteProjectPrompts(workingDir);
+      }
+    } catch (e: any) {
+      logger.log(`Error loading project prompts: ${e}`);
+      this.local.projectPrompts = [];
+    }
+
+    logger.log(`Loaded ${this.local.projectPrompts.length} project prompt(s).`);
+  }
+
+  /**
+   * Read `*.md` files from a local `.axle` directory.
+   */
+  private _readLocalProjectPrompts(axleDir: string): Array<{ name: string; content: string }> {
+    const prompts: Array<{ name: string; content: string }> = [];
+
+    if (!fs.existsSync(axleDir) || !fs.statSync(axleDir).isDirectory()) {
+      logger.log(`Project prompt folder '${axleDir}' not found.`);
+      return prompts;
+    }
+
+    const entries = fs.readdirSync(axleDir).sort();
+    for (const entry of entries) {
+      if (path.extname(entry).toLowerCase() !== '.md') {
+        continue;
+      }
+      const fullPath = path.join(axleDir, entry);
+      if (!fs.statSync(fullPath).isFile()) {
+        continue;
+      }
+      try {
+        prompts.push({ name: entry, content: fs.readFileSync(fullPath, 'utf8') });
+      } catch (e: any) {
+        logger.log(`Error reading project prompt '${fullPath}': ${e}`);
       }
     }
+
+    return prompts;
+  }
+
+  /**
+   * Read `*.md` files from the `.axle` directory of a remote working directory
+   * over SSH, reusing the shared connection helpers.
+   */
+  private async _readRemoteProjectPrompts(
+    workingDir: { serverName: string; path: string; server: Record<string, string> | null }
+  ): Promise<Array<{ name: string; content: string }>> {
+    const prompts: Array<{ name: string; content: string }> = [];
+    const serverName = workingDir.serverName;
+    const server = workingDir.server;
+
+    if (!server) {
+      logger.log(`No SSH server configuration found for '${serverName}'.`);
+      return prompts;
+    }
+
+    const baseDir = (workingDir.path || '.').replace(/\/+$/, '');
+    const axleDir = `${baseDir}/.axle`;
+    const delimiter = '<<<AXLE_PROJECT_PROMPT>>>';
+
+    try {
+      // Reuse the cached connection from remote.ts: it owns the lifecycle of
+      // the client, so it must NOT be closed here.
+      const target = this._toSshTarget(serverName, server);
+      const conn = await getSshConn(buildSshCacheKey(target), buildSshConnectConfig(target));
+
+      const axleDirQuoted = shellQuote(axleDir);
+      const script =
+        `if [ -d ${axleDirQuoted} ]; then ` +
+        `for f in ${axleDirQuoted}/*.md; do ` +
+        `[ -f "$f" ] || continue; ` +
+        `echo "${delimiter}$(basename "$f")"; ` +
+        `cat "$f"; ` +
+        `echo ""; ` +
+        `done; ` +
+        `fi`;
+
+      const out = await execCommand(conn, script);
+      if (out.code !== 0) {
+        logger.log(`Failed to list remote project prompts in '${axleDir}' (exit code ${out.code}).`);
+        return prompts;
+      }
+
+      const chunks = out.stdout.split(delimiter);
+      for (let i = 1; i < chunks.length; i++) {
+        const chunk = chunks[i];
+        const nl = chunk.indexOf('\n');
+        if (nl === -1) {
+          continue;
+        }
+        const name = chunk.substring(0, nl).trim();
+        let content = chunk.substring(nl + 1);
+        // Drop the single trailing newline added by the shell script.
+        if (content.endsWith('\n')) {
+          content = content.slice(0, -1);
+        }
+        if (name) {
+          prompts.push({ name, content });
+        }
+      }
+    } catch (e: any) {
+      logger.log(`Failed to read project prompts on remote server '${serverName}': ${e}`);
+      return prompts;
+    }
+
+    return prompts;
   }
 
   /**
@@ -257,6 +401,16 @@ export class AxlePrompt {
       } catch (e: any) {
         logger.log(`Error loading SYSTEM.md: ${e}`);
       }
+    }
+
+    // Append the project prompts loaded from `<workingDir>/.axle/*.md` (see
+    // buildDirPrompt) so they land at the END of the system prompt.
+    if (this.local.projectPrompts.length > 0) {
+      parts.push("\n---\n" + "## Project Prompts\n");
+      for (const projectPrompt of this.local.projectPrompts) {
+        parts.push(`\n### ${projectPrompt.name}\n\n${projectPrompt.content}\n`);
+      }
+      logger.log(`Appended ${this.local.projectPrompts.length} project prompt(s) to the system prompt.`);
     }
 
     return parts.join('');

@@ -249,7 +249,7 @@ export class Tail extends EventEmitter {
     } else if (payload !== undefined && payload !== null) {
       content = String(payload);
     }
-    this.conduit.send(type, 'log', content);
+    this.conduit.sendMessage(type, 'log', content);
   }
 
   private exists(): Promise<boolean> {
@@ -380,7 +380,7 @@ export class Tail extends EventEmitter {
   private async dispatch(): Promise<void> {
     try {
       if (this.conduit) {
-        await this.conduit.sendAsync('flush', 'log', '');
+        await this.conduit.sendMessageAsync('flush', 'log', '');
       }
       await this.flush();
     } catch (err) {

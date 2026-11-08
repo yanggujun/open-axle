@@ -16,7 +16,7 @@ import {
   type RightWorkspaceApi,
 } from './rightWorkspace';
 import { LOGS_TAB_ID, buildLogView } from './logView';
-import { FILES_TAB_ID, buildFilesView, refreshFiles, setFilesModelName, setFilesChangeDirHandler, setFilesSetDirHandler, setFilesInsertToChatHandler } from './filesTab';
+import { FILES_TAB_ID, buildFilesView, refreshFiles, setFilesModelName, setFilesChangeDirHandler, setFilesSetDirHandler, setFilesInsertToChatHandler, getFilesHighlightedFolder } from './filesTab';
 import {
   createAttachmentState,
   registerAttachment,
@@ -29,6 +29,25 @@ import {
   type AttachmentState,
   type PastedImage,
 } from './attachment';
+
+/**
+ * Destination for a 'Save' action taken from the chat log or an image preview:
+ * the folder currently HIGHLIGHTED in the Files tab, expressed the way the main
+ * process parses paths.
+ *
+ * Returns undefined when nothing is highlighted (or a FILE is), which leaves the
+ * save handlers using the agent's working directory exactly as before. The
+ * `only` filter lets the image flow ask for a LOCAL folder, because saving an
+ * image over SFTP is not supported: a remote highlight then simply falls back.
+ */
+function highlightedSaveTarget(only?: 'local' | 'remote'): string | undefined {
+  const folder = getFilesHighlightedFolder();
+  if (!folder) return undefined;
+  if (only === 'local' && folder.remote) return undefined;
+  if (only === 'remote' && !folder.remote) return undefined;
+  // Remote folders must carry the ssh:// prefix the main parser expects.
+  return folder.remote ? 'ssh://' + (folder.server || '') + folder.path : folder.path;
+}
 
 // The renderer runs sandboxed (contextIsolation: true, nodeIntegration: false).
 // It must NOT import Node core modules (fs) or main-only Electron APIs.
@@ -58,6 +77,11 @@ interface AxleBroadcast {
    * image directly instead of guessing its media type.
    */
   content?: string;
+  /**
+   * Conduit Protocol `signal`. 'persistable' messages offer hover buttons that
+   * save them into the working directory or into its `.axle` folder.
+   */
+  signal?: string;
 }
 
 declare global {
@@ -65,10 +89,25 @@ declare global {
     axle: {
       getModels(): Promise<ModelConfig[]>;
       getActiveModels(): Promise<ModelConfig[]>;
+      /** Create a new model and persist it to .llm.config. */
       addModel(model: ModelConfig): Promise<ModelConfig[]>;
+      /**
+       * Update an EXISTING model. The name is the immutable key: it selects the
+       * entry and can never be changed, so only the remaining settings are
+       * applied.
+       */
+      updateModel(modelName: string, patch: Partial<ModelConfig>): Promise<ModelConfig[]>;
+      /**
+       * List the models the given Base URL exposes (OpenAI-compatible
+       * /v1/models), authenticated with the supplied API key.
+       */
+      listModels(baseUrl: string, apiKey: string): Promise<{ ok: boolean; models: string[]; error?: string }>;
+      /** Toggle a model's active (open) flag. */
       setModelActive(modelName: string, active: boolean): Promise<boolean>;
+
       talk(text: string, modelName?: string, attachments?: { format: string; content: string }[]): Promise<void>;
-      saveImage(dataUrl: string, modelName?: string): Promise<{ ok: boolean; path?: string; fileName?: string; error?: string }>;
+      saveImage(dataUrl: string, modelName?: string, fileName?: string, targetDir?: string): Promise<{ ok: boolean; path?: string; fileName?: string; error?: string }>;
+      savePromptFile(content: string, modelName?: string, fileName?: string, asSkill?: boolean, targetDir?: string): Promise<{ ok: boolean; path?: string; fileName?: string; error?: string }>;
       switchAgent(modelName: string): Promise<boolean>;
       getSkills(modelName?: string): Promise<string>;
       reload(modelName?: string): Promise<void>;
@@ -223,7 +262,8 @@ function renderMessageInto(
   type: string,
   text: string,
   format = '',
-  images: { dataUrl: string; name?: string }[] = []
+  signal = '',
+  modelName?: string
 ): void {
   const msgDiv = document.createElement('div');
   msgDiv.className = `message ${type}${format === 'reasoning' ? ' reasoning' : ''}`;
@@ -238,26 +278,6 @@ function renderMessageInto(
   `;
   log.appendChild(msgDiv);
 
-  // Render any image attachments inline as a thumbnail gallery, so images
-  // that were sent WITH the message are visible in the chat log alongside
-  // (or instead of) the text.
-  if (images.length > 0) {
-    const body = msgDiv.querySelector('.message-body') as HTMLElement;
-    const gallery = document.createElement('div');
-    gallery.className = 'message-images';
-    for (const img of images) {
-      const thumb = document.createElement('img');
-      thumb.className = 'message-image-thumb';
-      thumb.src = img.dataUrl;
-      thumb.alt = img.name ?? 'attachment';
-      thumb.title = img.name ?? '';
-      // Clicking a thumbnail enlarges it to its ORIGINAL size in the overlay.
-      thumb.style.cursor = 'pointer';
-      thumb.addEventListener('click', () => showImageOverlay(img.dataUrl, img.name ?? ''));
-      gallery.appendChild(thumb);
-    }
-    body.appendChild(gallery);
-  }
 
   // Handle long system messages (broadcast type) truncation.
   if (type === 'broadcast') {
@@ -292,7 +312,216 @@ function renderMessageInto(
     }
   }
 
+  // A 'persistable' message offers hover-revealed actions that save its text
+  // into the working directory or into the working directory's .axle folder.
+  if (signal && signal.toLowerCase() === 'persistable' && text) {
+    attachPersistableActions(msgDiv, text, modelName);
+  }
+
   log.scrollTop = log.scrollHeight;
+}
+
+/**
+ * Attach the hover-revealed actions of a 'persistable' message.
+ *
+ * Two buttons are shown while the pointer is over the message:
+ *   - 'Save'           writes the message text into the working directory;
+ *   - 'Save as Skill'  writes it into <workingDir>/.axle (created if missing).
+ *
+ * Both open the SAME inline name editor the chat-log images use (file-name
+ * input + confirm check mark + cancel X + error line), so choosing a name
+ * behaves identically everywhere. As in the image Save flow, the editor is
+ * shown IN PLACE of the buttons: it is inserted at the action bar's position
+ * and absolutely positioned in the same top-right corner the 'Save' /
+ * 'Save as Skill' buttons occupy (the buttons are hidden while it is open),
+ * instead of being appended at the bottom of the message. Once opened it is
+ * NOT hover-gated, so it stays visible while the user types. The actual write
+ * happens in the MAIN process (axle:savePromptFile) because the renderer is
+ * sandboxed; that handler supports BOTH local and remote (ssh://) working
+ * directories.
+ */
+function attachPersistableActions(
+  msgDiv: HTMLElement,
+  content: string,
+  modelName?: string
+): void {
+  const actions = document.createElement('div');
+  actions.className = 'message-actions';
+
+  const pad2 = (n: number): string => String(n).padStart(2, '0');
+  const stamp = (d: Date): string =>
+    '' + d.getFullYear() + pad2(d.getMonth() + 1) + pad2(d.getDate()) +
+    '-' + pad2(d.getHours()) + pad2(d.getMinutes()) + pad2(d.getSeconds());
+  const defaultName = (): string => 'prompt-' + stamp(new Date()) + '.md';
+
+  /**
+   * Turn whatever the user typed into a plain file name: no directory part,
+   * no characters that are illegal on Windows/POSIX, no leading dots, and a
+   * '.md' extension when none was given. The main process sanitizes again.
+   */
+  const normalizeName = (raw: string): string => {
+    let name = raw.split(/[\\/]/).pop() || '';
+    name = name.replace(/[<>:"/\\|?*]/g, '');
+    name = name.replace(/^\.+/, '').trim();
+    if (!name) return defaultName();
+    if (!/\.[a-zA-Z0-9]+$/.test(name)) name += '.md';
+    return name;
+  };
+
+  let editor: HTMLElement | null = null;
+
+  const closeEditor = (): void => {
+    if (editor) {
+      editor.remove();
+      editor = null;
+    }
+    actions.style.display = '';
+  };
+
+  /**
+   * Open the shared name editor. `asSkill` decides the destination folder:
+   * the working directory itself, or its .axle sub-folder.
+   */
+  const openEditor = (asSkill: boolean): void => {
+    if (editor) return;
+
+    // The buttons are REPLACED by the editor while it is open.
+    actions.style.display = 'none';
+
+    const panel = document.createElement('div');
+    panel.className = 'chat-image-save-editor prompt-save-editor';
+    // Clicks inside the editor must not bubble further up.
+    panel.addEventListener('click', (e: MouseEvent) => { e.stopPropagation(); });
+
+    const nameInput = document.createElement('input');
+    nameInput.type = 'text';
+    nameInput.className = 'chat-image-save-name';
+    nameInput.value = defaultName();
+    nameInput.title = asSkill
+      ? 'File name (saved into the .axle folder)'
+      : 'File name (saved into the working directory)';
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.type = 'button';
+    confirmBtn.className = 'chat-image-save-confirm';
+    confirmBtn.textContent = '\u2713';
+    confirmBtn.title = 'Confirm the name and save (Enter)';
+
+    const cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'chat-image-save-cancel';
+    cancelBtn.textContent = '\u2715';
+    cancelBtn.title = 'Cancel (Escape)';
+
+    const errorLine = document.createElement('div');
+    errorLine.className = 'chat-image-save-error';
+
+    let saving = false;
+
+    const doSave = async (): Promise<void> => {
+      if (saving) return;
+
+      const raw = nameInput.value.trim();
+      if (!raw) {
+        errorLine.textContent = 'Please enter a file name.';
+        nameInput.focus();
+        return;
+      }
+      const fileName = normalizeName(raw);
+
+      saving = true;
+      confirmBtn.disabled = true;
+      errorLine.textContent = '';
+
+      try {
+        // A folder highlighted in the Files tab becomes the destination, so a
+        // saved prompt (or skill) lands where the user pointed instead of always
+        // in the agent's working directory. Both local and ssh:// folders are
+        // supported by the handler; no highlight leaves the argument undefined.
+        const saveTarget = highlightedSaveTarget();
+        const res = await window.axle.savePromptFile(content, modelName, fileName, asSkill, saveTarget);
+        if (!res || !res.ok) {
+          console.warn('[axle] Save prompt file failed:', res && res.error);
+          errorLine.textContent = (res && res.error) || ('Failed to save "' + fileName + '".');
+          return;
+        }
+        console.log('[axle] Prompt file saved:', res.path);
+        closeEditor();
+      } catch (e) {
+        console.error('[axle] Save prompt file error:', e);
+        errorLine.textContent = 'Failed to save the file.';
+      } finally {
+        saving = false;
+        confirmBtn.disabled = false;
+      }
+    };
+
+    confirmBtn.addEventListener('click', (e: MouseEvent) => {
+      e.stopPropagation();
+      void doSave();
+    });
+
+    cancelBtn.addEventListener('click', (e: MouseEvent) => {
+      e.stopPropagation();
+      closeEditor();
+    });
+
+    nameInput.addEventListener('keydown', (e: KeyboardEvent) => {
+      e.stopPropagation();
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        void doSave();
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        closeEditor();
+      }
+    });
+
+    const buttonRow = document.createElement('div');
+    buttonRow.className = 'chat-image-save-actions';
+    buttonRow.appendChild(confirmBtn);
+    buttonRow.appendChild(cancelBtn);
+
+    panel.appendChild(nameInput);
+    panel.appendChild(buttonRow);
+    panel.appendChild(errorLine);
+    // Show the editor IN PLACE of the Save / 'Save as Skill' buttons: it is
+    // absolutely positioned in the very top-right corner those buttons occupy
+    // (see .chat-image-save-editor.prompt-save-editor in styles.css), exactly
+    // like the chat-image editor replaces the image's Save button -- instead of
+    // being appended at the bottom of the message. It is NOT hover-gated, so it
+    // stays open and visible while the user types even when the pointer leaves
+    // the message.
+    msgDiv.insertBefore(panel, actions.nextSibling);
+    editor = panel;
+
+    nameInput.focus();
+    try { nameInput.select(); } catch { /* ignore */ }
+  };
+
+  const saveBtn = document.createElement('button');
+  saveBtn.type = 'button';
+  saveBtn.className = 'message-action-btn';
+  saveBtn.textContent = 'Save';
+  saveBtn.title = 'Save this message into the working directory';
+  saveBtn.addEventListener('click', (e: MouseEvent) => {
+    e.stopPropagation();
+    openEditor(false);
+  });
+
+  const skillBtn = document.createElement('button');
+  skillBtn.type = 'button';
+  skillBtn.className = 'message-action-btn';
+  skillBtn.textContent = 'Save as Skill';
+  skillBtn.title = 'Save this message into the .axle folder of the working directory';
+  skillBtn.addEventListener('click', (e: MouseEvent) => {
+    e.stopPropagation();
+    openEditor(true);
+  });
+
+  actions.appendChild(saveBtn);
+  actions.appendChild(skillBtn);
+  msgDiv.appendChild(actions);
 }
 
 /**
@@ -604,10 +833,8 @@ function handleResponse(data: AxleBroadcast): void {
     return;
   }
 
-  renderMessageInto(ws.chatLog, 'broadcast', data.message, data.format);
-
-  // Resolve an image source for this broadcast. Two cases can produce an
-  // image:
+  // Resolve an image source FIRST for this broadcast. Two cases can produce
+  // an image:
   //   1) the model/responses flow, which sends format='image' with the base64
   //      payload (or a ready data: URL) in `message`;
   //   2) a file-read flow, which forwards a ready-to-embed `data:image/...`
@@ -615,7 +842,49 @@ function handleResponse(data: AxleBroadcast): void {
   //      SVG (read as text but embeddable as an image).
   let imageSrc: string | null = null;
   if (data.format === 'image' || data.format === 'svg') {
-    imageSrc = data.content ?? null;
+    const sidecar = data.content ?? '';
+
+    if (data.format === 'svg') {
+      // For data.format === 'svg' the SVG source is carried in the sidecar
+      // `content` (falling back to `message`). A payload that already is a
+      // ready-to-embed data: URI is passed through untouched. Raw markup is
+      // normalised and embedded as an <img>-compatible data: URI. A browser
+      // refuses to rasterise an SVG served through <img> when the root <svg>
+      // element lacks the SVG namespace, so we guarantee `xmlns` is present;
+      // encodeURIComponent is REQUIRED because an unencoded '#' (fill/stroke
+      // colours) would be read as a URL fragment and truncate the picture.
+      const svgRaw = sidecar || data.message || '';
+      if (svgRaw) {
+        if (svgRaw.startsWith('data:')) {
+          imageSrc = svgRaw;
+        } else if (svgRaw.trim().startsWith('<')) {
+          let svg = svgRaw.trim();
+          const svgIdx = svg.toLowerCase().indexOf('<svg');
+          if (svgIdx >= 0) {
+            const end = svg.indexOf('>', svgIdx);
+            const openTag = end >= 0 ? svg.slice(svgIdx, end) : svg.slice(svgIdx);
+            if (!/xmlns/i.test(openTag)) {
+              svg = svg.slice(0, svgIdx) + '<svg xmlns="http://www.w3.org/2000/svg"' + svg.slice(svgIdx + 4);
+            }
+          }
+          imageSrc = 'data:image/svg+xml;utf8,' + encodeURIComponent(svg);
+        } else {
+          imageSrc = 'data:image/svg+xml;base64,' + svgRaw.replace(/\s+/g, '');
+        }
+      }
+    } else {
+      // Raster image: `content` already holds the finished data: URI / base64.
+      imageSrc = sidecar || null;
+    }
+  }
+
+  // Text bubble. For data.format === 'svg' the picture rendered below IS the
+  // message: never also dump the SVG source into the chat log, otherwise the
+  // same content is shown twice (once as escaped source, once as the picture).
+  // The escaped source is still shown when no picture could be built, so a
+  // broken payload is never silently swallowed.
+  if (data.message && !(data.format === 'svg' && imageSrc)) {
+    renderMessageInto(ws.chatLog, 'broadcast', data.message, data.format, data.signal ?? '', modelName);
   }
 
   // Render the image as a chat message bubble IDENTICAL to a user-sent image:
@@ -652,29 +921,237 @@ function handleResponse(data: AxleBroadcast): void {
     // Clicking the IMAGE enlarges it (the Save button stops propagation).
     img.addEventListener('click', () => showImageOverlay(src, ''));
 
+    // ---- Inline "save image" name editor -------------------------------
+    // Helpers used by the Save editor below. They live in this block so they
+    // travel with the image that owns them.
+
+    /** Map the media type of an image data: URI to a file extension. */
+    function imageExtFromSrc(dataUrl: string): string {
+      const m = /^data:image\/([a-zA-Z0-9.+-]+)[;,]/.exec(dataUrl || '');
+      const sub = (m ? m[1] : '').toLowerCase();
+      if (sub === 'jpeg' || sub === 'jpg') return '.jpg';
+      if (sub === 'svg+xml' || sub === 'svg') return '.svg';
+      if (sub === 'png') return '.png';
+      if (sub === 'gif') return '.gif';
+      if (sub === 'webp') return '.webp';
+      if (sub === 'bmp') return '.bmp';
+      if (sub === 'x-icon' || sub === 'vnd.microsoft.icon') return '.ico';
+      if (sub === 'tiff') return '.tiff';
+      if (sub === 'avif') return '.avif';
+      return '.png';
+    }
+
+    /** 'YYYYMMDD-HHMMSS' timestamp used in the default image file name. */
+    function timestampForFileName(d: Date): string {
+      const p = (n: number): string => String(n).padStart(2, '0');
+      return '' + d.getFullYear() + p(d.getMonth() + 1) + p(d.getDate()) +
+        '-' + p(d.getHours()) + p(d.getMinutes()) + p(d.getSeconds());
+    }
+
+    /** Pre-filled name shown in the editor: image-<timestamp>.<ext> */
+    function defaultImageFileName(dataUrl: string): string {
+      return 'image-' + timestampForFileName(new Date()) + imageExtFromSrc(dataUrl);
+    }
+
+    /**
+     * Turn whatever the user typed into a plain file name for the working
+     * directory: no directory part, no characters that are illegal on
+     * Windows/POSIX file systems, no leading dots, and always carrying an
+     * image extension.
+     */
+    function normalizeImageFileName(raw: string, dataUrl: string): string {
+      let name = raw.replace(/^.*[\\/]/, '');
+      name = name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '');
+      name = name.replace(/^\.+/, '').trim();
+      if (!name) name = defaultImageFileName(dataUrl);
+      if (!/\.(png|jpe?g|gif|svg|webp|bmp|ico|tiff?|avif)$/i.test(name)) {
+        name += imageExtFromSrc(dataUrl);
+      }
+      return name;
+    }
+
     const saveBtn = document.createElement('button');
     saveBtn.className = 'chat-image-save';
     saveBtn.type = 'button';
     saveBtn.textContent = 'Save';
     saveBtn.title = 'Save this image into the working directory';
-    // Do not let the Save click bubble up to the image (which would enlarge).
-    saveBtn.addEventListener('click', async (ev: MouseEvent) => {
-      ev.stopPropagation();
-      try {
-        const res = await window.axle.saveImage(src, modelName);
-        if (res && res.ok) {
-          console.log('[axle] Image saved:', res.path);
-          saveBtn.textContent = 'Saved';
-        } else {
-          console.warn('[axle] Save image failed:', res?.error);
-          saveBtn.textContent = 'Failed';
+
+    /**
+     * Replace the Save button with an inline editor: a file-name input with a
+     * confirm button immediately to its RIGHT and an error line underneath.
+     * Pressing Enter in the input or clicking the confirm button saves the
+     * image into the model's working directory; Escape cancels. If a file with
+     * the same name already exists there the save FAILS (nothing is
+     * overwritten) and the editor stays open showing the conflict.
+     */
+    const openSaveEditor = (): void => {
+      // Never open a second editor on the same image.
+      if (wrap.querySelector('.chat-image-save-editor')) return;
+
+      // The Save button is REPLACED by the editor while it is open.
+      saveBtn.style.display = 'none';
+
+      const editor = document.createElement('div');
+      editor.className = 'chat-image-save-editor';
+      editor.style.cssText = 'display:flex; align-items:center; gap:4px; flex-wrap:wrap;';
+      // Clicks inside the editor must never reach the image (which would open
+      // the full-screen overlay and swallow the interaction).
+      editor.addEventListener('click', (e: MouseEvent) => { e.stopPropagation(); });
+
+      const nameInput = document.createElement('input');
+      nameInput.type = 'text';
+      nameInput.className = 'chat-image-save-name';
+      nameInput.value = defaultImageFileName(src);
+      nameInput.title = 'Image file name (saved into the working directory)';
+
+      // Confirm button: a check mark to the RIGHT of the input. Its look comes
+      // from .chat-image-save-confirm (styles.css) so it follows the app theme.
+      const confirmBtn = document.createElement('button');
+      confirmBtn.type = 'button';
+      confirmBtn.className = 'chat-image-save-confirm';
+      confirmBtn.textContent = '✓';
+      confirmBtn.title = 'Confirm the name and save the image (Enter)';
+
+      // Cancel button: an X to the RIGHT of the confirm button. Closes the
+      // editor without saving and restores the Save button.
+      const cancelBtn = document.createElement('button');
+      cancelBtn.type = 'button';
+      cancelBtn.className = 'chat-image-save-cancel';
+      cancelBtn.textContent = '✕';
+      cancelBtn.title = 'Cancel (Escape)';
+
+      const errorLine = document.createElement('div');
+      errorLine.className = 'chat-image-save-error';
+
+      let saving = false;
+
+      const closeEditor = (): void => {
+        editor.remove();
+        saveBtn.style.display = '';
+      };
+
+      const showError = (msg: string): void => {
+        errorLine.textContent = msg;
+        nameInput.focus();
+        try { nameInput.select(); } catch { /* ignore */ }
+      };
+
+      // Save under the typed name. An existing file makes the save FAIL.
+      const doSave = async (): Promise<void> => {
+        if (saving) return;
+
+        const raw = nameInput.value.trim();
+        if (!raw) {
+          showError('Please enter a file name.');
+          return;
         }
-      } catch (e) {
-        console.error('[axle] Save image error:', e);
-        saveBtn.textContent = 'Failed';
-      }
-      // Restore the label after a moment.
-      setTimeout(() => { saveBtn.textContent = 'Save'; }, 1500);
+        const fileName = normalizeImageFileName(raw, src);
+
+        saving = true;
+        confirmBtn.disabled = true;
+        errorLine.textContent = '';
+
+        try {
+          // 1) A name conflict must make the save fail: check the working
+          //    directory (case-insensitive) BEFORE writing anything.
+          let dir = '';
+          try {
+            dir = await window.axle.getWorkingDir(modelName);
+          } catch (e) {
+            console.warn('[axle] getWorkingDir failed:', e);
+            dir = '';
+          }
+
+          if (dir) {
+            let existing: { name: string; type: 'file' | 'folder' }[] = [];
+            try {
+              existing = await window.axle.listEntries(dir);
+            } catch (e) {
+              console.warn('[axle] listEntries failed:', e);
+              existing = [];
+            }
+            const target = fileName.toLowerCase();
+            if (existing.some((entry) => entry.name.toLowerCase() === target)) {
+              showError('"' + fileName + '" already exists in the working directory.');
+              return;
+            }
+          }
+
+          // 2) Ask the main process to write the file under that name.
+          // Images (SVG included) are written with fs, so only a LOCAL highlighted
+          // folder can be honoured; a remote highlight yields undefined and the
+          // save falls back to the working directory (main reports the remote
+          // case with its own message).
+          const saveTarget = highlightedSaveTarget('local');
+          const res = await window.axle.saveImage(src, modelName, fileName, saveTarget);
+          if (!res || !res.ok) {
+            console.warn('[axle] Save image failed:', res?.error);
+            showError(res?.error || 'Failed to save "' + fileName + '".');
+            return;
+          }
+
+          // 3) Success: close the editor and briefly report it on the button.
+          console.log('[axle] Image saved:', res.path);
+          closeEditor();
+          saveBtn.textContent = 'Saved';
+          setTimeout(() => { saveBtn.textContent = 'Save'; }, 1500);
+        } catch (e) {
+          console.error('[axle] Save image error:', e);
+          showError('Failed to save the image.');
+        } finally {
+          saving = false;
+          confirmBtn.disabled = false;
+        }
+      };
+
+      // Confirm button (to the RIGHT of the input) triggers the save.
+      confirmBtn.addEventListener('click', (e: MouseEvent) => {
+        e.stopPropagation();
+        void doSave();
+      });
+
+      // Cancel button (to the RIGHT of the confirm button) closes the editor
+      // without saving and restores the Save button.
+      cancelBtn.addEventListener('click', (e: MouseEvent) => {
+        e.stopPropagation();
+        closeEditor();
+      });
+
+      // Enter confirms; Escape cancels and restores the Save button.
+      nameInput.addEventListener('keydown', (e: KeyboardEvent) => {
+        e.stopPropagation();
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          void doSave();
+        } else if (e.key === 'Escape') {
+          e.preventDefault();
+          closeEditor();
+        }
+      });
+
+      // The confirm (check mark) and cancel (X) buttons live in ONE row that
+      // never wraps internally, so they always render on the same line. The
+      // editor itself may wrap: the input takes the first line and this row
+      // follows it when the image (and therefore the editor) is narrow, but
+      // the two buttons are never split apart.
+      const actionsRow = document.createElement('div');
+      actionsRow.className = 'chat-image-save-actions';
+      actionsRow.appendChild(confirmBtn);
+      actionsRow.appendChild(cancelBtn);
+
+      editor.appendChild(nameInput);
+      editor.appendChild(actionsRow);
+      editor.appendChild(errorLine);
+      wrap.appendChild(editor);
+
+      nameInput.focus();
+      try { nameInput.select(); } catch { /* ignore */ }
+    };
+
+    // Do not let the Save click bubble up to the image (which would enlarge).
+    saveBtn.addEventListener('click', (ev: MouseEvent) => {
+      ev.stopPropagation();
+      openSaveEditor();
     });
 
     wrap.appendChild(img);
@@ -712,6 +1189,271 @@ function makeField(labelText: string, type: string, placeholder: string): { grou
   return { group, input };
 }
 
+/** Values collected from a model configuration form. */
+interface ModelFormValues {
+  name: string;
+  url: string;
+  key: string;
+  model: string;
+  skillsFolder: string;
+  responses: boolean;
+}
+
+/** Options accepted by buildModelForm(). */
+interface ModelFormOptions {
+  /** Initial field values: edit mode pre-fills the existing configuration. */
+  values?: Partial<ModelConfig>;
+  /**
+   * When true the Name field is rendered READ-ONLY. The model name is the
+   * immutable key of the configuration, so the edit dialog locks it while
+   * every other setting stays editable.
+   */
+  lockName?: boolean;
+  /** Label of the submit button ('Add LLM' for the new page, 'Save' to edit). */
+  submitLabel?: string;
+  /** Extra buttons rendered to the RIGHT of Submit (e.g. Cancel). */
+  extraActions?: HTMLElement[];
+  /** Invoked on submit with the collected values; may be async. */
+  onSubmit: (values: ModelFormValues) => Promise<void> | void;
+}
+
+/** The parts of a built model form its caller may need to reach. */
+interface ModelFormHandle {
+  form: HTMLFormElement;
+  submitBtn: HTMLButtonElement;
+  /** Show an inline message under the actions (error styling when isError). */
+  setStatus: (message: string, isError?: boolean) => void;
+}
+
+/**
+ * Build the model configuration form shared by the 'New LLM' page and the
+ * per-tab edit dialog. It renders exactly the same fields in both places:
+ * Name, Base URL, Model, API Key, Skills folder and the Responses API toggle,
+ * plus a Submit button and an optional row of extra actions.
+ *
+ * The 'Model' input carries a chevron button: clicking it asks the MAIN
+ * process to list the models the configured Base URL exposes (the
+ * OpenAI-compatible /v1/models endpoint, authenticated with the API key in
+ * this very form) and shows them as a pick list, so an exact model id never
+ * has to be typed by hand. Loading and error states are rendered inside the
+ * same menu.
+ */
+function buildModelForm(options: ModelFormOptions): ModelFormHandle {
+  const { values, lockName, onSubmit } = options;
+
+  const form = document.createElement('form');
+  form.className = 'config-form';
+
+  const nameField = makeField('Name', 'text', 'e.g. my-llm');
+  const urlField = makeField('Base URL', 'text', 'https://api.example.com/v1');
+  const keyField = makeField('API Key', 'password', 'sk-...');
+  const skillsField = makeField('Skills folder', 'text', 'skills');
+
+  nameField.input.value = values?.name ?? '';
+  urlField.input.value = values?.url ?? '';
+  keyField.input.value = values?.key ?? '';
+  skillsField.input.value = values?.skillsFolder ?? '';
+
+  // In edit mode the name is the immutable KEY of the configuration: it is
+  // displayed but cannot be changed (hence readOnly plus a short hint).
+  if (lockName) {
+    nameField.input.readOnly = true;
+    nameField.input.tabIndex = -1;
+    nameField.input.classList.add('locked-input');
+    nameField.input.title = 'The model name cannot be changed.';
+    nameField.group.classList.add('locked-field');
+
+    const lockHint = document.createElement('span');
+    lockHint.className = 'field-hint';
+    lockHint.textContent = 'The name cannot be changed.';
+    nameField.group.appendChild(lockHint);
+  }
+
+  // ---- Model field: text input + drop-down chevron ----
+  const modelGroup = document.createElement('div');
+  modelGroup.className = 'form-group';
+
+  const modelLabel = document.createElement('label');
+  modelLabel.textContent = 'Model';
+
+  const modelWrap = document.createElement('div');
+  modelWrap.className = 'model-input-wrap';
+
+  const modelInput = document.createElement('input');
+  modelInput.type = 'text';
+  modelInput.placeholder = 'model-name-here';
+  modelInput.value = values?.model ?? '';
+
+  const modelToggle = document.createElement('button');
+  modelToggle.type = 'button';
+  modelToggle.className = 'model-input-toggle';
+  modelToggle.textContent = '\u25BE'; // small down-pointing triangle
+  modelToggle.title = 'Load the models available at the Base URL';
+  modelToggle.setAttribute('aria-label', 'Load available models');
+
+  const modelMenu = document.createElement('div');
+  modelMenu.className = 'model-menu hidden';
+
+  modelWrap.appendChild(modelInput);
+  modelWrap.appendChild(modelToggle);
+  modelWrap.appendChild(modelMenu);
+
+  modelGroup.appendChild(modelLabel);
+  modelGroup.appendChild(modelWrap);
+
+  // Responses API checkbox
+  const respGroup = document.createElement('div');
+  respGroup.className = 'form-group checkbox-group';
+  const respLabel = document.createElement('label');
+  const respInput = document.createElement('input');
+  respInput.type = 'checkbox';
+  respInput.checked = Boolean(values?.responses);
+  respLabel.appendChild(respInput);
+  respLabel.appendChild(document.createTextNode(' Use Responses API'));
+  respGroup.appendChild(respLabel);
+
+  // Inline status line (validation / save errors)
+  const statusLine = document.createElement('div');
+  statusLine.className = 'config-status';
+
+  const setStatus = (message: string, isError = false): void => {
+    statusLine.textContent = message;
+    statusLine.classList.toggle('error', Boolean(message) && isError);
+  };
+
+  // Actions row: submit + caller-supplied extra actions (e.g. Cancel).
+  const submitBtn = document.createElement('button');
+  submitBtn.type = 'submit';
+  submitBtn.textContent = options.submitLabel ?? 'Add LLM';
+
+  const actions = document.createElement('div');
+  actions.className = 'config-actions';
+  actions.appendChild(submitBtn);
+  for (const extra of options.extraActions ?? []) {
+    actions.appendChild(extra);
+  }
+
+  form.appendChild(nameField.group);
+  form.appendChild(urlField.group);
+  form.appendChild(modelGroup);
+  form.appendChild(keyField.group);
+  form.appendChild(skillsField.group);
+  form.appendChild(respGroup);
+  form.appendChild(actions);
+  form.appendChild(statusLine);
+
+  // ---- Model pick list behaviour ----
+  const closeModelMenu = (): void => {
+    modelMenu.classList.add('hidden');
+    modelMenu.innerHTML = '';
+  };
+
+  /** Render a single non-interactive row (loading / error message). */
+  const showModelMenuMessage = (text: string, isError: boolean): void => {
+    modelMenu.innerHTML = '';
+    const row = document.createElement('div');
+    row.className = 'model-menu-message' + (isError ? ' error' : '');
+    row.textContent = text;
+    modelMenu.appendChild(row);
+    modelMenu.classList.remove('hidden');
+  };
+
+  /** Fetch the available models and render them as a pick list. */
+  const loadModels = async (): Promise<void> => {
+    // Second click on the chevron closes an already-open menu.
+    if (!modelMenu.classList.contains('hidden')) {
+      closeModelMenu();
+      return;
+    }
+
+    const url = urlField.input.value.trim();
+    if (!url) {
+      showModelMenuMessage('Enter the Base URL first.', true);
+      return;
+    }
+
+    // Loading state: the chevron is disabled and the menu reports progress.
+    modelToggle.disabled = true;
+    modelToggle.classList.add('loading');
+    showModelMenuMessage('Loading models...', false);
+
+    try {
+      const res = await window.axle.listModels(url, keyField.input.value.trim());
+      if (!res || !res.ok || !res.models || res.models.length === 0) {
+        showModelMenuMessage((res && res.error) || 'No models are available.', true);
+        return;
+      }
+
+      const current = modelInput.value.trim();
+      modelMenu.innerHTML = '';
+      for (const id of res.models) {
+        const item = document.createElement('button');
+        item.type = 'button';
+        item.className = 'model-menu-item' + (id === current ? ' selected' : '');
+        item.textContent = id;
+        item.title = id;
+        item.addEventListener('click', (ev: MouseEvent) => {
+          ev.stopPropagation();
+          modelInput.value = id;
+          closeModelMenu();
+        });
+        modelMenu.appendChild(item);
+      }
+      modelMenu.classList.remove('hidden');
+    } catch (e) {
+      console.error('[axle] Failed to list models:', e);
+      showModelMenuMessage('Failed to load the model list.', true);
+    } finally {
+      modelToggle.disabled = false;
+      modelToggle.classList.remove('loading');
+    }
+  };
+
+  modelToggle.addEventListener('click', (e: MouseEvent) => {
+    e.stopPropagation();
+    void loadModels();
+  });
+
+  // Clicking anywhere outside the model field closes the pick list.
+  document.addEventListener('click', (e: MouseEvent) => {
+    if (modelMenu.classList.contains('hidden')) return;
+    if (modelWrap.contains(e.target as Node)) return;
+    closeModelMenu();
+  });
+
+  // ---- Submit ----
+  form.addEventListener('submit', async (e: Event) => {
+    e.preventDefault();
+    setStatus('');
+
+    const collected: ModelFormValues = {
+      name: nameField.input.value.trim(),
+      url: urlField.input.value.trim(),
+      key: keyField.input.value.trim(),
+      model: modelInput.value.trim(),
+      skillsFolder: skillsField.input.value.trim(),
+      responses: respInput.checked,
+    };
+
+    if (!collected.name || !collected.model || !collected.url || !collected.key) {
+      setStatus('Name, Model, Base URL and API Key are all required.', true);
+      return;
+    }
+
+    submitBtn.disabled = true;
+    try {
+      await onSubmit(collected);
+    } catch (err) {
+      console.error('[axle] Failed to save the model configuration:', err);
+      setStatus('Failed to save the configuration.', true);
+    } finally {
+      submitBtn.disabled = false;
+    }
+  });
+
+  return { form, submitBtn, setStatus };
+}
+
 /**
  * Dynamically create the "add LLM" config panel (a workspace-style tab panel)
  * with its own form. On submit it persists the new model and swaps the config
@@ -726,78 +1468,44 @@ function buildConfigPanel(): HTMLElement {
   heading.textContent = 'Add an LLM Configuration';
   panel.appendChild(heading);
 
-  const form = document.createElement('form');
-  form.className = 'config-form';
-
-  const nameField = makeField('Name', 'text', 'e.g. my-llm');
-  const modelField = makeField('Model', 'text', 'model-name-here');
-  const urlField = makeField('Base URL', 'text', 'https://api.example.com/v1');
-  const keyField = makeField('API Key', 'password', 'sk-...');
-  const skillsField = makeField('Skills folder', 'text', 'skills');
-
-  // Responses API checkbox
-  const respGroup = document.createElement('div');
-  respGroup.className = 'form-group checkbox-group';
-  const respLabel = document.createElement('label');
-  const respInput = document.createElement('input');
-  respInput.type = 'checkbox';
-  respLabel.appendChild(respInput);
-  respLabel.appendChild(document.createTextNode(' Use Responses API'));
-  respGroup.appendChild(respLabel);
-
-  const submitBtn = document.createElement('button');
-  submitBtn.type = 'submit';
-  submitBtn.textContent = 'Add LLM';
-
-  // Actions row: submit + (optional) cancel.
-  const actions = document.createElement('div');
-  actions.className = 'config-actions';
-  actions.appendChild(submitBtn);
-
   // Only offer Cancel when there is at least one model to return to.
+  const extraActions: HTMLElement[] = [];
   if (models.length > 0) {
     const cancelBtn = document.createElement('button');
     cancelBtn.type = 'button';
     cancelBtn.className = 'config-cancel';
     cancelBtn.textContent = 'Cancel';
     cancelBtn.addEventListener('click', () => closeConfigView());
-    actions.appendChild(cancelBtn);
+    extraActions.push(cancelBtn);
   }
 
-  form.appendChild(nameField.group);
-  form.appendChild(modelField.group);
-  form.appendChild(urlField.group);
-  form.appendChild(keyField.group);
-  form.appendChild(skillsField.group);
-  form.appendChild(respGroup);
-  form.appendChild(actions);
-  panel.appendChild(form);
+  // The 'New LLM' page renders the SAME shared form the edit dialog uses, so
+  // the two places cannot drift apart.
+  let handle: ModelFormHandle | null = null;
+  handle = buildModelForm({
+    submitLabel: 'Add LLM',
+    extraActions,
+    onSubmit: async (values) => {
+      const name = values.name.trim();
 
-  form.addEventListener('submit', async (e: Event) => {
-    e.preventDefault();
+      // A model name is the unique key of the configuration: refuse to add a
+      // second entry with a name that is already taken.
+      const taken =
+        allModels.some((m) => m.name === name) || models.some((m) => m.name === name);
+      if (taken) {
+        handle?.setStatus('A model named "' + name + '" already exists.', true);
+        return;
+      }
 
-    const name = nameField.input.value.trim();
-    const model = modelField.input.value.trim();
-    const url = urlField.input.value.trim();
-    const key = keyField.input.value.trim();
-    const skillsFolder = skillsField.input.value.trim();
-    const responses = respInput.checked;
+      const newModel: ModelConfig = {
+        name,
+        url: values.url,
+        key: values.key,
+        model: values.model,
+        skillsFolder: values.skillsFolder || 'skills',
+        responses: values.responses,
+      };
 
-    if (!name || !url || !key || !model) {
-      console.warn('All fields (Name, Model, Base URL, API Key) are required to add an LLM.');
-      return;
-    }
-
-    const newModel: ModelConfig = {
-      name,
-      url,
-      key,
-      model,
-      skillsFolder: skillsFolder || 'skills',
-      responses,
-    };
-
-    try {
       await window.axle.addModel(newModel);
       models = await window.axle.getActiveModels();
       allModels = await window.axle.getModels();
@@ -805,11 +1513,10 @@ function buildConfigPanel(): HTMLElement {
       buildAllWorkspaces();
       renderTabs();
       switchToModel(name);
-    } catch (err) {
-      console.error('Failed to add the LLM:', err);
-    }
+    },
   });
 
+  panel.appendChild(handle.form);
   return panel;
 }
 
@@ -855,6 +1562,263 @@ function closeConfigView(): void {
   }
 }
 
+// ---- Per-model edit dialog ----
+
+/**
+ * The single floating edit dialog. Only ONE dialog may exist at a time:
+ * opening another (or switching/closing a tab) destroys the previous one.
+ */
+let editDialog: HTMLElement | null = null;
+
+/** Escape closes the edit dialog. */
+function onEditDialogKeydown(e: KeyboardEvent): void {
+  if (e.key === 'Escape') {
+    closeEditDialog();
+  }
+}
+
+/**
+ * Close and destroy the floating edit dialog, releasing the document-level
+ * listener it installed.
+ */
+function closeEditDialog(): void {
+  document.removeEventListener('keydown', onEditDialogKeydown);
+  if (editDialog) {
+    editDialog.remove();
+    editDialog = null;
+  }
+}
+
+/**
+ * Position the dialog as a popover just BELOW the tab that opened it (or in
+ * the top-left corner when no anchor is given), keeping it fully inside the
+ * viewport: a dialog opened near the right edge is shifted left instead of
+ * overflowing.
+ */
+function positionEditDialog(dialog: HTMLElement, anchor?: HTMLElement): void {
+  const width = 380;
+  const margin = 8;
+
+  let left = margin;
+  let top = margin;
+
+  if (anchor && anchor.isConnected) {
+    const rect = anchor.getBoundingClientRect();
+    left = rect.left;
+    top = rect.bottom + 4;
+  }
+
+  const maxLeft = window.innerWidth - width - margin;
+  if (left > maxLeft) left = Math.max(margin, maxLeft);
+  if (left < margin) left = margin;
+  if (top < margin) top = margin;
+
+  dialog.style.width = width + 'px';
+  dialog.style.left = left + 'px';
+  dialog.style.top = top + 'px';
+}
+
+/**
+ * Dialog mode.
+ *
+ *   'edit' -- edit an EXISTING model: the Name field is LOCKED (the model name
+ *             is the immutable key of the configuration) and the submit button
+ *             saves through the axle:updateModel IPC handler.
+ *   'copy' -- create a NEW model from an existing one: every value is copied
+ *             from the source model, but the Name field starts EMPTY and stays
+ *             editable so the user names the new entry; the submit button
+ *             creates it through the axle:addModel IPC handler.
+ */
+type ModelDialogMode = 'edit' | 'copy';
+
+/**
+ * Open the floating model dialog for an existing model.
+ *
+ * Both modes render the SAME form as the 'New LLM' page (buildModelForm), so
+ * the three places cannot drift apart; see ModelDialogMode for the differences
+ * between editing a model and copying one.
+ */
+function openModelDialog(mode: ModelDialogMode, modelName: string, anchor?: HTMLElement): void {
+  const isCopy = mode === 'copy';
+
+  // Never stack dialogs: a new click replaces the open one.
+  closeEditDialog();
+
+  const source =
+    allModels.find((m) => m.name === modelName) ??
+    models.find((m) => m.name === modelName);
+
+  if (!source) {
+    console.warn('[axle] ' + (isCopy ? 'Copy' : 'Edit') + ': unknown model:', modelName);
+    return;
+  }
+
+  const dialog = document.createElement('div');
+  dialog.className = 'edit-dialog';
+  dialog.dataset.model = modelName;
+  dialog.dataset.mode = mode;
+  // Clicks inside the dialog must never reach the outside-click handler below
+  // (which would immediately close it again).
+  dialog.addEventListener('click', (e: MouseEvent) => { e.stopPropagation(); });
+
+  // Header: title + close (×).
+  const header = document.createElement('div');
+  header.className = 'edit-dialog-header';
+
+  const title = document.createElement('span');
+  title.className = 'edit-dialog-title';
+  title.textContent = isCopy ? 'Copy LLM Configuration' : 'Edit LLM Configuration';
+
+  const closeBtn = document.createElement('button');
+  closeBtn.type = 'button';
+  closeBtn.className = 'edit-dialog-close';
+  closeBtn.textContent = '\u00d7';
+  closeBtn.title = 'Close (Escape)';
+  closeBtn.addEventListener('click', (e: MouseEvent) => {
+    e.stopPropagation();
+    closeEditDialog();
+  });
+
+  header.appendChild(title);
+  header.appendChild(closeBtn);
+  dialog.appendChild(header);
+
+  // Cancel button rendered next to Save / Add LLM.
+  const cancelBtn = document.createElement('button');
+  cancelBtn.type = 'button';
+  cancelBtn.className = 'config-cancel';
+  cancelBtn.textContent = 'Cancel';
+  cancelBtn.addEventListener('click', (e: MouseEvent) => {
+    e.stopPropagation();
+    closeEditDialog();
+  });
+
+  let handle: ModelFormHandle | null = null;
+  handle = buildModelForm({
+    // COPY starts from a full copy of the source model except the NAME, which
+    // is left EMPTY so the user names the new model before it is created.
+    values: isCopy ? { ...source, name: '' } : source,
+    lockName: !isCopy,
+    submitLabel: isCopy ? 'Add LLM' : 'Save',
+    extraActions: [cancelBtn],
+    onSubmit: async (values) => {
+      if (isCopy) {
+        const name = values.name.trim();
+        if (!name) {
+          handle?.setStatus('Please enter a name for the new model.', true);
+          return;
+        }
+
+        // A model name is the unique key of a configuration: refuse to create
+        // a second entry with a name that is already taken.
+        const taken =
+          allModels.some((m) => m.name === name) || models.some((m) => m.name === name);
+        if (taken) {
+          handle?.setStatus('A model named "' + name + '" already exists.', true);
+          return;
+        }
+
+        try {
+          await window.axle.addModel({
+            name,
+            url: values.url,
+            key: values.key,
+            model: values.model,
+            skillsFolder: values.skillsFolder || 'skills',
+            responses: values.responses,
+          });
+
+          models = await window.axle.getActiveModels();
+          allModels = await window.axle.getModels();
+        } catch (err) {
+          console.error('[axle] Failed to add the model configuration:', err);
+          handle?.setStatus('Failed to save the configuration.', true);
+          return;
+        }
+
+        closeEditDialog();
+        // A brand-new model needs its own workspace panel: drop the temporary
+        // config tab, rebuild the workspaces, re-render the tabs and switch to
+        // the newly created model.
+        closeConfigTab();
+        buildAllWorkspaces();
+        renderTabs();
+        switchToModel(name);
+        return;
+      }
+
+      try {
+        // The NAME is deliberately NOT sent: the main process keys the update
+        // on it and refuses to rename an existing entry.
+        await window.axle.updateModel(modelName, {
+          url: values.url,
+          key: values.key,
+          model: values.model,
+          skillsFolder: values.skillsFolder || 'skills',
+          responses: values.responses,
+        });
+
+        models = await window.axle.getActiveModels();
+        allModels = await window.axle.getModels();
+      } catch (err) {
+        console.error('[axle] Failed to update the model configuration:', err);
+        handle?.setStatus('Failed to save the configuration.', true);
+        return;
+      }
+
+      closeEditDialog();
+      // Model settings do not change the panel layout, but the tab list is
+      // re-rendered so anything derived from the configuration stays in sync.
+      renderTabs();
+    },
+  });
+
+  dialog.appendChild(handle.form);
+
+  // Attach to <body> and float it (position: fixed) so the tab bar's overflow
+  // cannot clip the popover.
+  document.body.appendChild(dialog);
+  editDialog = dialog;
+  positionEditDialog(dialog, anchor);
+
+  document.addEventListener('keydown', onEditDialogKeydown);
+
+  // In COPY mode focus the (empty) Name field so a name can be typed at once;
+  // the Name input is the FIRST input of the shared form.
+  if (isCopy) {
+    const nameInput = handle.form.querySelector('input') as HTMLInputElement | null;
+    if (nameInput) {
+      nameInput.focus();
+      try { nameInput.select(); } catch { /* ignore */ }
+    }
+  }
+
+  // Close when clicking anywhere outside the dialog.
+  setTimeout(() => {
+    const onDocClick = (ev: MouseEvent): void => {
+      if (!dialog.contains(ev.target as Node)) {
+        closeEditDialog();
+        document.removeEventListener('click', onDocClick);
+      }
+    };
+    document.addEventListener('click', onDocClick);
+  }, 0);
+}
+
+/** Open the dialog in EDIT mode for an existing model (see openModelDialog). */
+function openEditDialog(modelName: string, anchor?: HTMLElement): void {
+  openModelDialog('edit', modelName, anchor);
+}
+
+/**
+ * Open the dialog in COPY mode: everything is copied from an existing model
+ * except the NAME, which starts EMPTY. Confirming adds a NEW model to the LLM
+ * config (window.axle.addModel) and switches to it.
+ */
+function openCopyDialog(modelName: string, anchor?: HTMLElement): void {
+  openModelDialog('copy', modelName, anchor);
+}
+
 // ---- Tab rendering ----
 function renderTabs(): void {
   tabBar.innerHTML = '';
@@ -867,16 +1831,28 @@ function renderTabs(): void {
     tab.className = 'tab-button' + (isActive ? ' active' : '');
     tab.dataset.model = model.name;
 
+    // Edit (✎): opens the floating edit dialog for THIS model. The dialog uses
+    // the same form as the 'New LLM' page, with the name locked. It is placed
+    // BEFORE the label so the tab reads: [✎] [name] [×].
+    const edit = document.createElement('span');
+    edit.className = 'tab-edit';
+    edit.textContent = '\u270E';
+    edit.title = 'Edit this LLM configuration';
+    edit.addEventListener('click', (e: MouseEvent) => {
+      e.stopPropagation();
+      openEditDialog(model.name, tab);
+    });
+    tab.appendChild(edit);
+
     const label = document.createElement('span');
     label.className = 'tab-label';
     label.textContent = model.name;
     label.addEventListener('click', () => switchToModel(model.name));
     tab.appendChild(label);
 
-    // Close (×) icon: deactivates the model and removes its tab/workspace.
     const close = document.createElement('span');
     close.className = 'tab-close';
-    close.textContent = '×';
+    close.textContent = '\u00d7';
     close.title = 'Close tab';
     close.addEventListener('click', (e: MouseEvent) => {
       e.stopPropagation();
@@ -891,7 +1867,7 @@ function renderTabs(): void {
   const addBtn = document.createElement('button');
   addBtn.className = 'tab-button add-tab';
   addBtn.id = 'add-tab-btn';
-  addBtn.textContent = '+ Add';
+  addBtn.textContent = '+';
   addBtn.addEventListener('click', openAddMenu);
   tabBar.appendChild(addBtn);
 
@@ -931,6 +1907,9 @@ function showWorkspaces(): void {
 
 /** Show only the active model's workspace panel; hide the rest (and config). */
 function switchToModel(modelName: string): void {
+  // Any open edit popover belongs to the tab being left behind.
+  closeEditDialog();
+
   currentModelName = modelName;
   // Let the attachment module know which tab is in focus so getPastedImages() /
   // window.pastedImages default to THIS model's pending images.
@@ -960,8 +1939,13 @@ function switchToModel(modelName: string): void {
 
 }
 
+
+
 /** Close a model tab: deactivate it, remove its workspace, switch elsewhere. */
 async function closeModel(name: string): Promise<void> {
+  // An open edit popover belongs to the tab being removed.
+  closeEditDialog();
+
   try {
     await window.axle.setModelActive(name, false);
   } catch (e) {
@@ -1009,6 +1993,69 @@ async function reopenModel(name: string): Promise<void> {
   switchToModel(name);
 }
 
+// ---- '+ Add' menu icons ----
+
+/** SVG namespace used by every inline menu icon. */
+const SVG_NS = 'http://www.w3.org/2000/svg';
+
+/** One drawing primitive of an inline icon. */
+interface MenuIconPart {
+  tag: 'path' | 'rect';
+  attrs: Record<string, string>;
+}
+
+/**
+ * Build one inline SVG icon for the '+ Add' menu.
+ *
+ * The elements are created with createElementNS (never innerHTML), so the
+ * renderer cannot accidentally inject markup, and the drawing strokes with
+ * `currentColor`: the icon then follows the surrounding button's colour and
+ * its hover state without any extra CSS rule per state.
+ */
+function createMenuIcon(parts: MenuIconPart[]): SVGSVGElement {
+  const svg = document.createElementNS(SVG_NS, 'svg') as SVGSVGElement;
+  svg.setAttribute('class', 'menu-icon');
+  svg.setAttribute('viewBox', '0 0 24 24');
+  svg.setAttribute('width', '14');
+  svg.setAttribute('height', '14');
+  svg.setAttribute('fill', 'none');
+  svg.setAttribute('stroke', 'currentColor');
+  svg.setAttribute('stroke-width', '2');
+  svg.setAttribute('stroke-linecap', 'round');
+  svg.setAttribute('stroke-linejoin', 'round');
+  svg.setAttribute('aria-hidden', 'true');
+  svg.setAttribute('focusable', 'false');
+
+  for (const part of parts) {
+    const el = document.createElementNS(SVG_NS, part.tag);
+    for (const [name, value] of Object.entries(part.attrs)) {
+      el.setAttribute(name, value);
+    }
+    svg.appendChild(el);
+  }
+
+  return svg;
+}
+
+/**
+ * 'Copy' icon: two overlapping sheets, drawn in the same outline style as the
+ * rest of the UI. Used by the per-model Copy button of the '+ Add' menu.
+ */
+function createCopyIcon(): SVGSVGElement {
+  return createMenuIcon([
+    { tag: 'rect', attrs: { x: '8', y: '8', width: '14', height: '14', rx: '2', ry: '2' } },
+    { tag: 'path', attrs: { d: 'M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2' } },
+  ]);
+}
+
+/** 'Plus' icon used by the '+ New LLM' action of the same menu. */
+function createPlusIcon(): SVGSVGElement {
+  return createMenuIcon([
+    { tag: 'path', attrs: { d: 'M12 5v14' } },
+    { tag: 'path', attrs: { d: 'M5 12h14' } },
+  ]);
+}
+
 /** Remove any add-menu dropdown. */
 function closeAddMenu(): void {
   const existing = document.getElementById('add-menu');
@@ -1048,14 +2095,45 @@ async function openAddMenu(): Promise<void> {
   menu.className = 'add-menu';
 
   for (const m of inactive) {
+    // One ROW per closed model: the model name (reopen) fills the row and the
+    // icon-only 'Copy' button is pinned to its RIGHT EDGE -- the same column
+    // every other icon of this menu occupies (see .add-menu-copy and
+    // .add-menu-icon-cell in styles.css). Copying opens the SAME dialog as the
+    // edit (✎) icon -- every value is pre-filled from this model except the
+    // name -- and confirming adds a NEW model to the LLM config.
+    const row = document.createElement('div');
+    row.className = 'add-menu-row';
+
     const item = document.createElement('button');
-    item.className = 'add-menu-item';
+    item.type = 'button';
+    item.className = 'add-menu-item add-menu-name';
     item.textContent = m.name;
+    item.title = 'Reopen ' + m.name;
     item.addEventListener('click', () => {
       closeAddMenu();
       reopenModel(m.name);
     });
-    menu.appendChild(item);
+    row.appendChild(item);
+
+    // Icon-only Copy button: the label lives in the tooltip / aria-label, the
+    // drawing in the inline SVG icon (createCopyIcon, currentColor stroked).
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'add-menu-item add-menu-copy';
+    copyBtn.title = 'Copy ' + m.name + ' to a new LLM';
+    copyBtn.setAttribute('aria-label', 'Copy ' + m.name + ' to a new LLM');
+    copyBtn.appendChild(createCopyIcon());
+    copyBtn.addEventListener('click', (ev: MouseEvent) => {
+      ev.stopPropagation();
+      // The dialog is anchored to the '+ Add' tab button, exactly like the
+      // edit popover is anchored to its tab.
+      const anchor = document.getElementById('add-tab-btn') ?? undefined;
+      closeAddMenu();
+      openCopyDialog(m.name, anchor);
+    });
+    row.appendChild(copyBtn);
+
+    menu.appendChild(row);
   }
 
   // Divider between the reopen list and the 'create new' action.
@@ -1063,9 +2141,23 @@ async function openAddMenu(): Promise<void> {
   divider.className = 'add-menu-divider';
   menu.appendChild(divider);
 
+  // '+ New LLM': the label fills the row and the plus icon sits in the SAME
+  // right-hand column as the per-model Copy icons (a single flex button keeps
+  // the whole row clickable while its icon stays aligned).
   const newItem = document.createElement('button');
+  newItem.type = 'button';
   newItem.className = 'add-menu-item add-menu-new';
-  newItem.textContent = '+ New LLM';
+
+  const newLabel = document.createElement('span');
+  newLabel.className = 'add-menu-label';
+  newLabel.textContent = 'New LLM';
+  newItem.appendChild(newLabel);
+
+  const newIconCell = document.createElement('span');
+  newIconCell.className = 'add-menu-icon-cell';
+  newIconCell.appendChild(createPlusIcon());
+  newItem.appendChild(newIconCell);
+
   newItem.addEventListener('click', () => {
     closeAddMenu();
     openConfigTab();

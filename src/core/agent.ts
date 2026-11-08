@@ -1,4 +1,4 @@
-import { Conduit } from './conduit';
+import { Conduit, Protocol } from './conduit';
 import { Model, Attachment } from './model';
 import { discoverExecutors, validate, ExecutorMap, parseActionJson } from './executor';
 import { buildImageUri, extractJson } from '../common/common';
@@ -8,7 +8,7 @@ import { Runtime } from '../common/common';
 import { WorkingDir } from '../common/common';
 import { FullSkillConfig } from '../common/common';
 import { TextType } from './parser';
-import {logger} from './logger';
+import { logger, truncateLogContent} from './logger';
 import { ModelConfig } from './config';
 import { AxlePrompt } from './prompt';
 
@@ -84,16 +84,16 @@ export class AxleAgent {
         this.workingDir = parsed;
         await this.prompt.buildOsPrompt(parsed);
         logger.log(`Working directory changed to remote server '${parsed.serverName}' at '${parsed.path}' (config resolved)`);
-        this.conduit.send(`Working directory changed to remote: ${parsed.serverName}:${parsed.path}`);
+        this.conduit.sendMessage(`Working directory changed to remote: ${parsed.serverName}:${parsed.path}`);
       } else {
         logger.log(`Working directory changed to remote server '${parsed.serverName}' at '${parsed.path}' but no 'ssh'/'scp' config was found`);
-        this.conduit.send(`Working directory changed to remote: ${parsed.serverName}:${parsed.path} (warning: no matching server configuration found)`);
+        this.conduit.sendMessage(`Working directory changed to remote: ${parsed.serverName}:${parsed.path} (warning: no matching server configuration found)`);
       }
     } else {
       this.workingDir = parsed;
       await this.prompt.buildOsPrompt(parsed);
       logger.log(`Working directory changed to local path '${parsed.path}'`);
-      this.conduit.send(`Working directory changed to: ${parsed.path}`);
+      this.conduit.sendMessage(`Working directory changed to: ${parsed.path}`);
     }
     this.buildRuntime();
   }
@@ -160,17 +160,17 @@ export class AxleAgent {
   reload(): void {
     this.prompt.reloadSkills();
     this.model.clear();
-    this.conduit.send('\nSkills reloaded and conversation reset.\n');
+    this.conduit.sendMessage('\nSkills reloaded and conversation reset.\n');
   }
 
   clear(): void {
     this.model.clear();
-    this.conduit.send('\nConversation history cleared.\n');
+    this.conduit.sendMessage('\nConversation history cleared.\n');
   }
 
   getSkills(): string {
     const skills = this.prompt.getSkillsSummary();
-    this.conduit.send(skills);
+    this.conduit.sendMessage(skills);
     return skills;
   }
 
@@ -186,13 +186,13 @@ export class AxleAgent {
     // Fresh task loop: clear any previous stop request and tell the UI the
     // continuous loop is now running (this enables the Stop button).
     this._stopRequested = false;
-    this.conduit.send('running', 'stop-state');
+    this.conduit.sendMessage('running', 'stop-state');
 
     while (followup) {
       // Break out cleanly if a stop was requested (e.g. via the Stop button).
       if (this._stopRequested) {
         logger.log(`Task loop stopped by user request for ${this.modelName}`);
-        this.conduit.send('The task was stopped by user request.', 'md');
+        this.conduit.sendMessage('The task was stopped by user request.', 'md');
         break;
       }
 
@@ -208,7 +208,7 @@ export class AxleAgent {
       // message (rendered as a clickable bubble in the chat log).
       if (chatResult.binary) {
         const chatResultImageUri = buildImageUri('image/png', chatResult.binary);
-        this.conduit.send('', 'image', chatResultImageUri);
+        this.conduit.sendMessage('', 'image', chatResultImageUri);
       }
       const [textType, payload, text] = validate(response);
       logger.log(`Response format: ${textType}`);
@@ -235,29 +235,33 @@ export class AxleAgent {
       } else if (textType === TextType.JSON || textType == TextType.TRAILING_JSON) {
         result = await this.execute(payload) as ExecutionResponse | string;
         if (text) {
-          this.conduit.send(`${text}`, 'md');
+          this.conduit.sendMessage(`${text}`, 'md');
         }
       } else {
-        result = new ExecutionResponse(response, '', false, true, 'md');
+        result = new ExecutionResponse(response, '', false, true, 'md', '', true);
       }
 
       if (ExecutionResponse.isExecutionResponse(result)) {
         logger.log(`continue: ${result.sequential}`);
         const needPrint = result.print;
+        const persist = result.persist;
         let imageUri: string | undefined = undefined;
         if (needPrint && needPrint === true && result.content) {
           if (result.format === 'image') {
             imageUri = buildImageUri(result.mimeType, result.content);
-            this.conduit.send('', result.format, imageUri);
+            this.conduit.sendMessage('', result.format, imageUri);
+          } else if (result.format === 'svg') {
+            this.conduit.sendMessage('', result.format, result.content);
           } else {
-            this.conduit.send(`${result.content}`, result.format);
+            const prc: Protocol = {message: result.content, content: '', format: result.format, signal: (persist ? 'Persistable' : '')};
+            this.conduit.send(prc);
           }
         }
 
         followup = result.sequential;
         if (followup) {
           const nextPrompt = result.prompt;
-          userInput = nextPrompt + '\n';
+          userInput = nextPrompt + '\n\n';
           let imageUri: string | undefined = undefined;
           if (result.format === 'image') {
             currentAttachments = [{ format: result.mimeType, content: result.content }];
@@ -267,20 +271,23 @@ export class AxleAgent {
             currentAttachments = undefined;
           }
 
-          logger.log(`Auto prompt: ${userInput}`);
-          this.conduit.send(userInput, result.format, imageUri);
+          const promptLog = truncateLogContent(userInput);
+          logger.log(`Auto prompt: ${promptLog}`);
+          this.conduit.sendMessage(userInput, result.format, imageUri);
         } else {
-          logger.log(`Result:\n${result.content}`);
+          const logContent = truncateLogContent(result.content);
+          logger.log(`Result:\n${logContent}`);
         }
       } else {
         followup = false;
         if (result) {
           const rsl = JSON.stringify(result)
           logger.log(`Execution result: ${rsl}`);
-          this.conduit.send(rsl, 'md');
+          const prc: Protocol = {message: rsl, content: '', format: '', signal: 'Persistable'}
+          this.conduit.send(prc);
         } else {
           logger.log('Empty result');
-          this.conduit.send('No response');
+          this.conduit.sendMessage('No response');
         }
       }
 
@@ -289,12 +296,12 @@ export class AxleAgent {
     // Only announce completion when the loop actually finished on its own.
     if (!this._stopRequested) {
       logger.log('The requested task is completed.');
-      this.conduit.send('The requested task is completed.');
+      this.conduit.sendMessage('The requested task is completed.');
     }
     // Reset the stop flag and tell the UI the loop is no longer running
     // (this disables the Stop button).
     this._stopRequested = false;
-    this.conduit.send('idle', 'stop-state');
+    this.conduit.sendMessage('idle', 'stop-state');
     userInput = '';
     followup = true;
   }
@@ -307,11 +314,19 @@ export class AxleAgent {
     const action = actionJson?.action;
     const reasoning = actionJson?.thinking;
     if (reasoning) {
-      this.conduit.send(reasoning, "reasoning");
+      this.conduit.sendMessage(reasoning, "reasoning");
     }
     if (action in executors) {
       logger.log(`find executor for action ${action}`)
-      this.conduit.send(`Executing ${action}...`);
+      const actionProps: Array<{ name: string; value: unknown }> = actionJson?.properties ?? [];
+      const params = actionProps
+        .map((p) => {
+          const raw = typeof p.value === 'string' ? p.value : JSON.stringify(p.value);
+          const value = raw.length > 10 ? `${raw.slice(0, 10)}...` : raw;
+          return `${JSON.stringify(p.name)}: ${JSON.stringify(value)}`;
+        })
+        .join(', ');
+      this.conduit.sendMessage(`Executing ${action} with params: [${params}]`);
       const executor = executors[action];
       const response: ExecutionResponse = await executor(jsonPayload, this.runtime)
       return response;
@@ -325,13 +340,17 @@ export class AxleAgent {
         }
         let content = '';
         for (const k in props) {
-          content += props[k] + '\n';
+          if (k === 'svg') {
+            this.conduit.sendMessage('', 'svg', props[k]);
+          } else {
+            content += `### ${k}:\n\n${props[k]}\n\n`;
+          }
         }
         let toPrint = false;
         if (Object.keys(props).length > 0) {
           toPrint = true;
         }
-        return new ExecutionResponse(content, '', false, toPrint, "md");
+        return new ExecutionResponse(content, '', false, toPrint, "md", '', true);
       } else {
         return new ExecutionResponse('', '', false, true);
       }

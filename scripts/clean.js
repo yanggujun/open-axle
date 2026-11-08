@@ -16,7 +16,7 @@ function removeDir(dir) {
  * @param {string[]} [targets] - Directories to clean. Defaults to ['out', 'dist'].
  * @returns {string[]} The list of directories that were cleaned.
  */
-function clean(targets = ['out', 'dist']) {
+function clean(targets = ['out', 'dist', 'build']) {
   for (const target of targets) {
     removeDir(target);
   }

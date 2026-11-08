@@ -1,9 +1,9 @@
 {
   "compilerOptions": {
-    "rootDir": "src/skills",
-    "outDir": "dist/skills",
+    "outDir": "dist",
     "module": "commonjs",
     "target": "ES6",
+    "lib": ["ES2020", "DOM"],
     "esModuleInterop": true,
     "moduleResolution": "node",
     "resolveJsonModule": true,
@@ -12,5 +12,10 @@
     "declaration": false,
     "noEmitOnError": false
   },
-  "include": ["src/skills/**/*.ts"]
+  "include": [
+    "src/skills/**/*.ts",
+    "src/browser/**/*.ts",
+    "src/common/**/*.ts",
+    "src/db/**/*.ts"
+  ]
 }

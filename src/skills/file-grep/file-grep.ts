@@ -312,12 +312,49 @@ function grepFromPayload(payload: string | Record<string, any>, runtime?: Runtim
     }
   }
 
-  let files = '';
-  for (const [fpath, hits] of matchedFiles) {
-    files += fpath + '\n';
+  // Build the response text. THIS is where show_lines takes effect -- the
+  // per-line hits collected by _searchFile are used here instead of being
+  // dropped:
+  //   - show_lines = true  -> one grep-like hit line per match, carrying BOTH
+  //     the line number and the matching line content: `path:line:text`.
+  //   - show_lines = false -> only the matching file locations, one per line.
+  // The accumulated text is capped so a very broad match cannot flood the
+  // caller (max_results only bounds the number of FILES, not the hit lines).
+  const MAX_OUTPUT_CHARS = 1000000;
+  let output = '';
+  let truncated = false;
+
+  if (data.show_lines) {
+    outer: for (const [fpath, hits] of matchedFiles) {
+      for (const [lineNo, lineText] of hits) {
+        const entry = `${fpath}: ${lineNo}: ${lineText}\n`;
+        if ((output.length + entry.length) > MAX_OUTPUT_CHARS) {
+          truncated = true;
+          break outer;
+        }
+        output += entry;
+      }
+    }
+  } else {
+    for (const [fpath] of matchedFiles) {
+      const entry = fpath + '\n';
+      if ((output.length + entry.length) > MAX_OUTPUT_CHARS) {
+        truncated = true;
+        break;
+      }
+      output += entry;
+    }
   }
 
-  return _wrapResponse(files, data.sequential, data.prompt);
+  if (truncated) {
+    output += `... output truncated at ${MAX_OUTPUT_CHARS} characters\n`;
+  }
+
+  if (output.length <= 0) {
+    return _wrapResponse('No file is found', data.sequential);
+  }
+
+  return _wrapResponse(output, data.sequential, data.prompt);
 }
 
 // ---------------------------------------------------------------------------
@@ -386,26 +423,58 @@ async function grepFromPayloadRemote(
       `-- ${shellQuote(data.pattern)} ${shellQuote(root)} 2>/dev/null`;
     const { stdout } = await execCommand(conn, cmd);
 
-    // Parse output lines: '<path>:<lineno>:<text>' (with -n). Collect unique paths.
-    const matchedFiles: string[] = [];
+    // Parse the `grep -n` output lines: '<path>:<lineno>:<text>'. show_lines
+    // decides what is returned, mirroring the LOCAL implementation:
+    //   - true  -> keep the hit lines themselves, so the caller gets BOTH the
+    //     line number and the matching line content.
+    //   - false -> collapse to ONE line per matching file.
+    // max_results bounds the number of matching FILES; hit lines belonging to
+    // a file beyond that limit are dropped. The accumulated text is capped so
+    // a very broad match cannot flood the caller.
+    const MAX_OUTPUT_CHARS = 1000000;
     const seen = new Set<string>();
-    const lines = stdout.split(/\r?\n/);
-    for (const line of lines) {
+    let output = '';
+    let outputTruncated = false;
+    let fileLimitReached = false;
+
+    for (const line of stdout.split(/\r?\n/)) {
       if (!line) continue;
       const m = /^(.*?):(\d+):/.exec(line);
       const fpath = m ? m[1] : line.split(':')[0];
-      if (!fpath || seen.has(fpath)) continue;
-      seen.add(fpath);
-      matchedFiles.push(fpath);
-      if (matchedFiles.length >= data.max_results) break;
+      if (!fpath) continue;
+
+      const isNewFile = !seen.has(fpath);
+      if (isNewFile) {
+        if (seen.size >= data.max_results) {
+          fileLimitReached = true;
+          break;
+        }
+        seen.add(fpath);
+      } else if (!data.show_lines) {
+        // Already reported this file and only its location is wanted.
+        continue;
+      }
+
+      const entry = data.show_lines ? line + '\n' : fpath + '\n';
+      if (output.length + entry.length > MAX_OUTPUT_CHARS) {
+        outputTruncated = true;
+        break;
+      }
+      output += entry;
     }
 
-    if (matchedFiles.length === 0) {
+    if (seen.size === 0) {
       return _wrapResponse('No file is found', data.sequential);
     }
 
-    const files = matchedFiles.join('\n') + '\n';
-    return _wrapResponse(files, data.sequential, data.prompt);
+    if (fileLimitReached) {
+      output += `... stopped after ${data.max_results} matching files\n`;
+    }
+    if (outputTruncated) {
+      output += `... output truncated at ${MAX_OUTPUT_CHARS} characters\n`;
+    }
+
+    return _wrapResponse(output, data.sequential, data.prompt);
   } catch (e: any) {
     return _wrapResponse(_errorContentJson(`Failed to grep remote files over SSH: ${e.message}`), data.sequential, data.prompt);
   } finally {

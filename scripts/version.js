@@ -34,26 +34,6 @@ function computeBuildNumber(now) {
 }
 
 /**
- * REVISION = last 4 digits of the current time in milliseconds.
- * If the first digit is '0', advance the timestamp and recalculate until the
- * first digit is not '0'.
- * @returns {string}
- */
-function computeRevision() {
-  let ts = Date.now();
-  let revision = String(ts).slice(-4);
-
-  let guard = 0;
-  while (revision.charAt(0) === '0' && guard < 100000) {
-    ts += 1;
-    revision = String(ts).slice(-4);
-    guard += 1;
-  }
-
-  return revision;
-}
-
-/**
  * Read MAJOR.MINOR from the current package.json "version".
  * @returns {{ major: string, minor: string }}
  */
@@ -74,23 +54,10 @@ function readMajorMinor() {
 function computeVersion() {
   const { major, minor } = readMajorMinor();
   const buildNumber = computeBuildNumber(new Date());
-  const revision = computeRevision();
-  return `${major}.${minor}.${buildNumber}-${revision}`;
-}
-
-/**
- * Compute the version and write it back into package.json (opt-in only).
- * @returns {string} the written version
- */
-function writeVersion() {
-  const pkg = JSON.parse(fs.readFileSync(PKG_PATH, 'utf8'));
-  pkg.version = computeVersion();
-  fs.writeFileSync(PKG_PATH, JSON.stringify(pkg, null, 2) + '\n', 'utf8');
-  return pkg.version;
+  return `${major}.${minor}.${buildNumber}`;
 }
 
 module.exports = {
   computeVersion,
-  computeBuildNumber,
-  computeRevision
+  computeBuildNumber
 };

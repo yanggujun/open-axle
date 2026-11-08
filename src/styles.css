@@ -176,7 +176,7 @@ h1 {
   border: 1px solid #444;
   border-bottom: none;
   color: #ccc;
-  padding: 8px 12px 8px 16px;
+  padding: 8px 4px 8px 4px;
   border-radius: 6px 6px 0 0;
   cursor: pointer;
   white-space: nowrap;
@@ -1221,4 +1221,525 @@ pre {
 
 .chat-image-wrap:hover .chat-image-save {
   display: block;
+}
+
+/* ============================================================
+   Inline save-image name editor
+   ------------------------------------------------------------
+   Clicking the hover-revealed Save button of a chat-log image
+   (renderer.ts, handleResponse) REPLACES that button with this
+   editor: a file-name input, a confirm (check mark) button and a
+   cancel (X) button immediately to its RIGHT, plus an error line
+   underneath. Pressing Enter in the input or clicking the check
+   mark saves the image into the working directory; the X (or
+   Escape) closes the editor without saving. An existing file
+   makes the save FAIL and the error line reports it (see
+   .chat-image-save-error below).
+
+   It is absolutely positioned in the SAME top-right corner the
+   Save button occupied. Unlike the button it is NOT hover-gated:
+   once opened it stays visible while the user types, even when
+   the pointer leaves the image.
+
+   DARK THEME: colours mirror the rest of the main screen --
+   #2d2d30 panels, #1e1e1e inputs, #444 borders, #e0e0e0 text and
+   the #4fc3f7 accent for the primary (confirm) action -- so the
+   editor no longer looks like a foreign light card.
+   ============================================================ */
+.chat-image-save-editor {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  z-index: 2; /* above the image inside the wrap */
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  max-width: calc(100% - 12px);
+  box-sizing: border-box;
+  padding: 4px 6px;
+  background: #2d2d30; /* dark panel, same as .controls / dock headers */
+  color: #e0e0e0;
+  font-size: 12px;
+  border: 1px solid #444;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.55);
+  cursor: default;
+}
+
+/* File-name input of the editor. The basis is kept small so the input plus
+   the actions row (check mark + X) fit on ONE line for normally sized images;
+   when the image is very narrow the actions row wraps BELOW the input as a
+   whole, never splitting its two buttons. */
+.chat-image-save-name {
+  flex: 1 1 120px;
+  min-width: 90px;
+  box-sizing: border-box;
+  padding: 4px 6px;
+  font-family: inherit;
+  font-size: 12px;
+  color: #e0e0e0;
+  background: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 4px;
+}
+
+/* Row holding the confirm (check mark) and cancel (X) buttons. It is a
+   NON-wrapping flex row and a single flex item of the editor, so the two
+   buttons always render side by side on the same line: the editor may place
+   this whole row after the input (narrow image) but it never separates the
+   buttons from each other. */
+.chat-image-save-actions {
+  display: flex;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.chat-image-save-name::placeholder {
+  color: #8a8a8a;
+}
+
+.chat-image-save-name:focus {
+  outline: none;
+  border-color: #4fc3f7;
+  box-shadow: 0 0 0 2px rgba(79, 195, 247, 0.35);
+}
+
+/* Confirm button (check mark), to the RIGHT of the input. Uses the app accent
+   colour shared by the other primary buttons (Send / Add LLM). */
+.chat-image-save-confirm {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  font-weight: bold;
+  color: #1e1e1e;
+  background-color: #4fc3f7;
+  border: 1px solid #3aa8d8;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.chat-image-save-confirm:hover:not(:disabled) {
+  background-color: #81d4fa;
+}
+
+.chat-image-save-confirm:disabled {
+  background-color: #cccccc;
+  border-color: #cccccc;
+  color: #888888;
+  cursor: not-allowed;
+  opacity: 0.7;
+}
+
+/* Cancel button (X), to the RIGHT of the confirm button. Styled like the
+   .controls buttons so it reads as a neutral secondary action, with the same
+   red hover the tab close (x) icons use.
+
+   The :hover rule is repeated with a class-level selector because
+   `.input-area button:hover` (and similar grouped rules) would otherwise
+   repaint it in the accent blue. */
+.chat-image-save-cancel {
+  flex: 0 0 auto;
+  padding: 2px 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.2;
+  color: #ccc;
+  background-color: #3c3c3c;
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.chat-image-save-cancel:hover {
+  background-color: #c62828;
+  border-color: #c62828;
+  color: #ffffff;
+}
+
+/* Inline error line (e.g. the name already exists in the working directory).
+   Spans the full width of the editor, below the input + buttons row. */
+.chat-image-save-error {
+  flex: 1 1 100%;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 2px 2px 0 2px;
+  font-size: 12px;
+  line-height: 1.3;
+  color: #ff8b8b; /* soft red, readable on the dark panel */
+  background: transparent;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* An empty error line takes no visual space. */
+.chat-image-save-error:empty {
+  display: none;
+}
+
+/* While the editor is open the renderer hides the Save button inline, so no
+   extra rule is needed here; the hover rule above only gates the button. */
+
+/* ============================================================
+   Persistable message actions (Save / Save as Skill)
+   ------------------------------------------------------------
+   Messages whose Protocol.signal is 'persistable' get an action
+   bar that is revealed while the pointer is over the message
+   (renderer.ts, attachPersistableActions). Both buttons open the
+   SAME inline name editor used by chat images
+   (.chat-image-save-editor). As in the image Save flow, the editor
+   REPLACES the buttons in place: .prompt-save-editor keeps the
+   editor overlayed in the same top-right corner the action bar
+   occupies (the bar is hidden by the renderer while it is open).
+   ============================================================ */
+.message {
+  position: relative;
+}
+
+.message-actions {
+  display: none;
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  gap: 6px;
+  align-items: center;
+  z-index: 3;
+}
+
+.message:hover .message-actions {
+  display: flex;
+}
+
+.message-action-btn {
+  padding: 3px 10px;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1.4;
+  color: #8868b9;
+  background: rgba(0, 0, 0, 0.65);
+  border: 1px solid #555;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.message-action-btn:hover {
+  background: rgba(0, 0, 0, 0.85);
+  border-color: #4fc3f7;
+  color: #c7a9a9;
+}
+
+/* The prompt name editor reuses the image editor's look and, like the image
+   editor replacing the image's Save button, it REPLACES the Save /
+   'Save as Skill' buttons IN PLACE: it is overlayed in the very same
+   top-right corner the .message-actions bar occupies (the bar is hidden
+   inline by the renderer while the editor is open). It is NOT hover-gated
+   once opened, so it stays visible while the user types even when the
+   pointer leaves the message. */
+.chat-image-save-editor.prompt-save-editor {
+  position: absolute;
+  top: 4px;
+  right: 8px;
+  z-index: 3; /* same stacking order as .message-actions */
+  margin-top: 0;
+  max-width: calc(100% - 16px);
+}
+
+/* ---- Per-model edit (✎) icon on the model tab ---- */
+.tab-edit {
+  padding: 0 6px;
+  border-radius: 4px;
+  color: #888;
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.tab-edit:hover {
+  color: #1e1e1e;
+  background-color: #4fc3f7;
+}
+
+/* ---- Floating model edit dialog (hovered popover) ---- */
+.edit-dialog {
+  position: fixed;
+  z-index: 1100;
+  background-color: #252526;
+  border: 1px solid #444;
+  border-radius: 8px;
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.55);
+  padding: 14px 16px 16px;
+  max-height: calc(100vh - 24px);
+  overflow-y: auto;
+  box-sizing: border-box;
+}
+
+.edit-dialog-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.edit-dialog-title {
+  color: #4fc3f7;
+  font-size: 14px;
+  font-weight: bold;
+}
+
+.edit-dialog-close {
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 16px;
+  line-height: 1;
+  padding: 2px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.edit-dialog-close:hover {
+  color: #fff;
+  background-color: #c62828;
+}
+
+/* The shared form fills the dialog: it is narrower than the config page. */
+.edit-dialog .config-form {
+  max-width: none;
+}
+
+/* ---- Locked Name field in the edit dialog ---- */
+.config-form .form-group.locked-field .locked-input,
+.config-form input.locked-input {
+  background-color: #2a2a2a;
+  color: #8a8a8a;
+  border-color: #3a3a3a;
+  cursor: not-allowed;
+}
+
+.field-hint {
+  font-size: 11px;
+  color: #7a7a7a;
+}
+
+/* ---- Model input with the drop-down chevron ---- */
+.model-input-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.model-input-wrap input[type="text"] {
+  flex: 1 1 auto;
+  /* Leave room for the chevron button pinned to the right edge. */
+  padding-right: 34px;
+  box-sizing: border-box;
+  width: 100%;
+}
+
+.model-input-toggle {
+  position: absolute;
+  right: 4px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #9e9e9e;
+  font-size: 12px;
+  line-height: 1;
+  padding: 4px 8px;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.model-input-toggle:hover {
+  color: #4fc3f7;
+  background-color: #333;
+}
+
+.model-input-toggle:disabled {
+  color: #555;
+  cursor: default;
+}
+
+.model-input-toggle.loading {
+  animation: model-toggle-pulse 1s ease-in-out infinite;
+}
+
+@keyframes model-toggle-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
+}
+
+/* ---- Available-model pick list ---- */
+.model-menu {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: calc(100% + 2px);
+  z-index: 1200;
+  background-color: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 4px;
+}
+
+.model-menu.hidden {
+  display: none;
+}
+
+.model-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  color: #ccc;
+  padding: 7px 10px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 13px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.model-menu-item:hover {
+  background-color: #3a3a3d;
+}
+
+.model-menu-item.selected {
+  color: #4fc3f7;
+  font-weight: bold;
+}
+
+.model-menu-message {
+  padding: 7px 10px;
+  font-size: 12px;
+  color: #9e9e9e;
+}
+
+.model-menu-message.error {
+  color: #ef9a9a;
+}
+
+/* ---- Inline status line under the form actions ---- */
+.config-status {
+  min-height: 14px;
+  font-size: 12px;
+  color: #9e9e9e;
+}
+
+.config-status.error {
+  color: #ef9a9a;
+}
+
+/* ============================================================
+   "+ Add" menu rows with the per-model Copy button
+   ------------------------------------------------------------
+   The dropdown opened by the "+" tab lists the closed models.
+   Each entry is now a ROW (renderer.ts, openAddMenu): the model
+   name button keeps its original reopen behaviour and fills the
+   row, while a compact "Copy" button is pinned to its RIGHT and
+   opens the edit-style dialog pre-filled from that model with an
+   EMPTY name, creating a brand-new LLM.
+
+   .add-menu-item is a full-width block button, which cannot sit
+   beside a sibling, so the row wrapper turns it into a flex item
+   and the name is allowed to shrink/truncate instead of pushing
+   the Copy button out of the card.
+   ============================================================ */
+
+/* One row per closed model: name button on the left, Copy icon on the right. */
+.add-menu-row {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+}
+
+/* The model-name button fills the row and truncates long names with an
+   ellipsis, so the Copy icon always stays visible in the right-hand column. */
+.add-menu-row > .add-menu-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  width: auto;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ---- Right-hand icon column --------------------------------------------
+   Every icon of the menu lives in a fixed-size cell pinned to the SAME right
+   edge, so the per-model Copy icons and the '+ New LLM' plus icon line up in
+   one vertical column. The Copy button IS its own cell; the '+ New LLM' entry
+   wraps its icon in .add-menu-icon-cell. Both share the geometry below. */
+.add-menu-copy,
+.add-menu-icon-cell {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 28px;
+  min-width: 30px;
+  padding: 0;
+  box-sizing: border-box;
+  background: none;
+  border: none;
+  border-radius: 4px;
+}
+
+/* Icon-only Copy button: accent coloured so it reads as the row's secondary
+   action, filling with the accent colour on hover. */
+.add-menu-copy {
+  color: #4fc3f7;
+  cursor: pointer;
+}
+
+.add-menu-copy:hover {
+  color: #1e1e1e;
+  background-color: #4fc3f7;
+}
+
+/* The '+ New LLM' entry: label on the left, its icon cell pinned right. The
+   right padding is dropped so this icon sits on the very same edge as the
+   per-model Copy icons (instead of 10px further left). */
+.add-menu-item.add-menu-new {
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-right: 0;
+}
+
+.add-menu-new .add-menu-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.add-menu-new .add-menu-icon-cell {
+  color: #a5d6a7;
+}
+
+/* The inline SVG itself: inherits currentColor, never captures the pointer so
+   a click anywhere on the cell always hits the button underneath. */
+.menu-icon {
+  display: block;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  pointer-events: none;
 }

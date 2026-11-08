@@ -41,7 +41,19 @@ const config: ForgeConfig = {
     // under resources/ are unaffected by the OnlyLoadAppFromAsar /
     // EnableEmbeddedAsarIntegrityValidation fuses, which only govern loading
     // application CODE from the asar.
-    extraResource: ['./dist/skills'],
+    // Ship the runtime image assets OUTSIDE app.asar as well: the window and
+    // macOS Dock icon are loaded from process.resourcesPath/app-icon.png at
+    // runtime. app-icon.png is rendered from resources/app-icon.svg by
+    // `scripts/make-icons.js`.
+    extraResource: ['./dist/skills', './resources/app-icon.png'],
+    // Application icon used by electron-packager/Forge at PACKAGE time. The
+    // extension is appended per platform automatically: build/app-icon.ico on
+    // win32 (stamped into Open-Axle.exe and the installers/shortcuts) and
+    // build/app-icon.icns on darwin (written into Open-Axle.app/Contents/
+    // Resources and referenced from Info.plist). Both are generated from
+    // resources/app-icon.svg by `scripts/make-icons.js` -- rerun that script
+    // whenever the SVG changes. This has NO effect on `npm start`.
+    icon: './build/app-icon',
   },
   hooks: {
     // Electron Forge makers (Squirrel/ZIP/Rpm/Deb) build their artifact and

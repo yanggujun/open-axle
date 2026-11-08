@@ -232,14 +232,20 @@ function ensureStarted(): void {
       .catch((): undefined => undefined);
   }
 
+  // Mark as started BEFORE the async tail resolves so a near-simultaneous
+  // onShow() (which fires right after buildLogView on the first open) does
+  // not issue a SECOND startLogTail(). A second start resets/clears the view
+  // without replaying the file, which is what left the tab blank on first
+  // open until it was hidden and shown again.
+  started = true;
   axle
     .startLogTail()
     .then((p: string) => {
-      started = true;
       if (p) setPath(p);
       scrollToBottom();
     })
     .catch((err: Error) => {
+      started = false;
       if (bodyEl) {
         bodyEl.textContent += '[log error] ' + err.message + '\n';
         scrollToBottom();

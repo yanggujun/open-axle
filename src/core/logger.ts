@@ -41,3 +41,18 @@ export class AxleLogger {
 }
 
 export const logger = new AxleLogger(getAppHome());
+
+
+const MAX_SIZE = 50 * 1000; // 50k = 50000
+
+export function truncateLogContent(input: string): string {
+  const encoder = new TextEncoder();
+  const bytes = encoder.encode(input);
+  if (bytes.length <= MAX_SIZE) {
+    return input;
+  }
+  const truncatedBytes = bytes.slice(0, MAX_SIZE);
+  // Decode safely, ignoring any incomplete trailing multi-byte sequence.
+  const decoder = new TextDecoder('utf-8', { fatal: false });
+  return decoder.decode(truncatedBytes) + "\n\n<content truncated>\n";
+}

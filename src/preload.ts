@@ -20,6 +20,17 @@ export interface AxleBroadcast {
   message: string;
   format?: string;
   modelName?: string;
+  /**
+   * Sidecar payload carried by the conduit Protocol `content` (e.g. a
+   * ready-to-embed `data:` URI for image/file results).
+   */
+  content?: string;
+  /**
+   * Conduit Protocol `signal`. When it is 'persistable' the chat log offers
+   * hover buttons to save the message into the working directory or into its
+   * `.axle` folder as a skill.
+   */
+  signal?: string;
 }
 
 /**
@@ -45,9 +56,33 @@ const axleApi = {
   /** Return all configured LLM models. */
   getModels: (): Promise<ModelConfig[]> => ipcRenderer.invoke('axle:getModels'),
 
+
+
   /** Add a new model and persist it to .llm.config. Returns the updated list. */
   addModel: (model: ModelConfig): Promise<ModelConfig[]> =>
     ipcRenderer.invoke('axle:addModel', model),
+
+  /**
+   * Update an EXISTING model and persist the change. `modelName` is the
+   * immutable key: it identifies the entry and is never modified, so only the
+   * settings carried by `patch` (url/key/model/skillsFolder/responses) can
+   * change. Returns the updated list of all models.
+   */
+  updateModel: (modelName: string, patch: Partial<ModelConfig>): Promise<ModelConfig[]> =>
+    ipcRenderer.invoke('axle:updateModel', modelName, patch),
+
+  /**
+   * Ask the MAIN process to list the models a provider exposes, by calling the
+   * OpenAI-compatible `<baseUrl>/v1/models` endpoint with the supplied API key
+   * (sent as an 'Authorization: Bearer <key>' header).
+   * Resolves { ok, models, error }: `models` holds the sorted model ids and
+   * `error` is a short message to display when `ok` is false.
+   */
+  listModels: (
+    baseUrl: string,
+    apiKey: string
+  ): Promise<{ ok: boolean; models: string[]; error?: string }> =>
+    ipcRenderer.invoke('axle:listModels', baseUrl, apiKey),
 
   /** Return only the ACTIVE (open) models. */
   getActiveModels: (): Promise<ModelConfig[]> => ipcRenderer.invoke('axle:getActiveModels'),
@@ -69,13 +104,35 @@ const axleApi = {
 
   /**
    * Save a model-returned image (given as an image data URL) into the agent's
-   * current working directory. Returns { ok, path?, fileName?, error? }.
+   * current working directory. When `fileName` is supplied the image is saved
+   * under that name; the MAIN process sanitizes it and REFUSES to overwrite an
+   * existing file, in which case it resolves { ok: false, error }.
+   * Returns { ok, path?, fileName?, error? }.
    */
   saveImage: (
     dataUrl: string,
-    modelName?: string
+    modelName?: string,
+    fileName?: string,
+    targetDir?: string
   ): Promise<{ ok: boolean; path?: string; fileName?: string; error?: string }> =>
-    ipcRenderer.invoke('axle:saveImage', dataUrl, modelName),
+    ipcRenderer.invoke('axle:saveImage', dataUrl, modelName, fileName, targetDir),
+
+  /**
+   * Save the text of a 'persistable' chat message into the agent's working
+   * directory under a user-chosen name. With `asSkill` true the file is
+   * written into `<workingDir>/.axle` instead (the folder is created when it
+   * does not exist). LOCAL and remote (ssh://) working dirs are both
+   * supported; an existing file is never overwritten, in which case it
+   * resolves { ok: false, error }.
+   */
+  savePromptFile: (
+    content: string,
+    modelName?: string,
+    fileName?: string,
+    asSkill?: boolean,
+    targetDir?: string
+  ): Promise<{ ok: boolean; path?: string; fileName?: string; error?: string }> =>
+    ipcRenderer.invoke('axle:savePromptFile', content, modelName, fileName, asSkill, targetDir),
 
   /** Switch the active agent/tab to the given model name. */
   switchAgent: (modelName: string): Promise<void> =>
@@ -234,6 +291,159 @@ const axleApi = {
     ipcRenderer.on('axle:fsChanged', listener);
     return () => ipcRenderer.removeListener('axle:fsChanged', listener);
   },
+
+  /**
+   * Ask the MAIN process whether a file may be opened in the 'Files' tab's
+   * 'Edit' dialog. The renderer cannot perform this check itself: the shared
+   * helpers in src/common/common.ts import fs, so they only run in main.
+   *
+   * A file is editable only when its extension is whitelisted AND its leading
+   * bytes look like text; binary files and remote (ssh://) paths are refused.
+   * Resolves with the verdict and, when refused, a short reason to display.
+   */
+  canEditFile: (
+    filePath: string,
+    modelName?: string
+  ): Promise<{ editable: boolean; reason: string }> =>
+    ipcRenderer.invoke('axle:canEditFile', filePath, modelName),
+
+  /**
+   * Read a file as RAW text for the 'Edit' dialog. Unlike the read skills this
+   * applies NO markdown code fence and NO CSV table rendering, so the text is
+   * safe to load straight into an editable buffer.
+   * Resolves { ok: true, content } or { ok: false, error }.
+   */
+  readFileRaw: (
+    filePath: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; content?: string; error?: string }> =>
+    ipcRenderer.invoke('axle:readFileRaw', filePath, modelName),
+
+  /**
+   * Persist text edited in the 'Edit' dialog. The write happens in main
+   * because the renderer is sandboxed; the 'Files' tab's directory watcher
+   * then refreshes the listing automatically.
+   * Resolves { ok: true } or { ok: false, error }.
+   */
+  writeFileRaw: (
+    filePath: string,
+    content: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('axle:writeFileRaw', filePath, content, modelName),
+
+  /**
+   * Ask the MAIN process whether a file may be shown by the 'Files' tab's
+   * 'View' menu item. Like canEditFile the verdict must be computed in main,
+   * because the image whitelist (IMAGE_EXTENSION_MIME_MAP in
+   * src/common/common.ts) lives in a module that imports fs. Only the file's
+   * extension is inspected, so the answer is available for LOCAL files and
+   * remote (ssh://) paths alike, without opening an SSH connection.
+   * Resolves with the verdict and, when refused, a short reason to display.
+   */
+  canViewFile: (
+    filePath: string,
+    modelName?: string
+  ): Promise<{ viewable: boolean; reason: string }> =>
+    ipcRenderer.invoke('axle:canViewFile', filePath, modelName),
+
+  /**
+   * Read an image file for the 'View' dialog and return its bytes as base64
+   * together with the MIME type, so the renderer can build a data: URI. LOCAL
+   * files are read from disk; ssh:// paths are fetched over the cached SFTP
+   * session. Non-image extensions are refused by main.
+   * Resolves { ok: true, base64, mimeType } or { ok: false, error }.
+   */
+  readImageFile: (
+    filePath: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; base64?: string; mimeType?: string; error?: string }> =>
+    ipcRenderer.invoke('axle:readImageFile', filePath, modelName),
+
+  /**
+   * Create an EMPTY file at `filePath` for the 'Files' tab's New File action.
+   * An existing file is never truncated. LOCAL paths are created with fs;
+   * ssh:// paths are created over the CACHED SFTP session.
+   * Resolves { ok: true } or { ok: false, error }.
+   */
+  createFile: (
+    filePath: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('axle:createFile', filePath, modelName),
+
+  /**
+   * Create a single folder at `dirPath` for the 'Files' tab's New Folder
+   * action. Creation is NOT recursive, so an existing folder is reported as an
+   * error instead of being silently accepted. ssh:// paths go over the CACHED
+   * SFTP session.
+   * Resolves { ok: true } or { ok: false, error }.
+   */
+  createFolder: (
+    dirPath: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('axle:createFolder', dirPath, modelName),
+
+  /**
+   * Copy a FILE to `destPath` for the 'Files' tab's Copy File action. Folders
+   * are refused, an existing destination is never overwritten, and both paths
+   * must live in the same world (local -> local, or remote -> remote on the
+   * same server). Remote copies ride the CACHED SFTP session.
+   * Resolves { ok: true } or { ok: false, error }.
+   */
+  copyFile: (
+    srcPath: string,
+    destPath: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('axle:copyFile', srcPath, destPath, modelName),
+
+  /**
+   * Copy a file OR a folder, recursively, for the 'Files' tab's Paste action.
+   * Unlike copyFile this accepts folders and EVERY world combination: local ->
+   * local, remote -> remote on the same server, local -> remote and remote ->
+   * local. An existing destination is never overwritten: the entry is stored
+   * under the next free name ('name copy', 'name copy 2', ...) and the final
+   * path is reported back in `path` (ssh:// prefixed when remote).
+   * Resolves { ok: true, path } or { ok: false, error }.
+   */
+  copyEntry: (
+    srcPath: string,
+    destPath: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; error?: string; path?: string }> =>
+    ipcRenderer.invoke('axle:copyEntry', srcPath, destPath, modelName),
+
+  /**
+   * Local files currently on the OPERATING SYSTEM clipboard, so the Files tab's
+   * Paste can copy entries that were copied in another application. Remote
+   * (ssh://) paths have no OS form and are never reported.
+   * Resolves { ok, files } (files is empty when the clipboard holds no files).
+   */
+  getClipboardFiles: (): Promise<{ ok: boolean; files: string[]; error?: string }> =>
+    ipcRenderer.invoke('axle:getClipboardFiles'),
+
+  /**
+   * Put LOCAL files on the OPERATING SYSTEM clipboard so the Files tab's Copy can
+   * be pasted in Explorer/Finder and survives an app restart. Remote paths are
+   * refused by the main process.
+   * Resolves { ok } or { ok: false, error }.
+   */
+  setClipboardFiles: (paths: string[]): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('axle:setClipboardFiles', paths),
+
+  /**
+   * Delete a file, or a folder together with everything inside it, for the
+   * 'Files' tab's Delete action. LOCAL paths use fs; ssh:// paths are removed
+   * over the CACHED SFTP session, depth-first.
+   * Resolves { ok: true } or { ok: false, error }.
+   */
+  deleteEntry: (
+    targetPath: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; error?: string }> =>
+    ipcRenderer.invoke('axle:deleteEntry', targetPath, modelName),
 };
 
 export type AxleApi = typeof axleApi;

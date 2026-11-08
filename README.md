@@ -101,9 +101,7 @@ The `SKILL.md` file is used as context for the LLM. Python files with `@AxleExec
 ## TODO
 - multi-agents
 
-- open website in the workzone
-
-- grep return matched line
-
 - open binary files, word, excel, ppt, pdf...
+
+- read svg file 
 

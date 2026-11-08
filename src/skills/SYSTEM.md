@@ -20,3 +20,15 @@ All the output follow the below format and no code fence should be applied. For 
 | `sequential`  | object | No       | if the output needs to be used as input for LLM for next task.     |
 | `prompt`      | string | No       | the prompt used as input for LLM for following tasks. need to list ***ALL*** of the following tasks, not just the next task, so that LLM can complete whole task chain without lost in the middle of execution.|
 | `properties`  | object  | Yes    | Include a list of key value pairs of the operation.  The key value pairs are defeind for different skills.|
+
+### Output SVG Image
+When an SVG image is the output and NOT written to a file, use the following output:
+
+> {
+>   "action": "",
+>   "thinking": "the think trace of LLM",
+>   "properties": [
+>     { "name": "svg", "value": "svg content" },
+>     { "name": "other property", "value": "other value" }
+>   ]
+> }

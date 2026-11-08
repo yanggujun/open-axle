@@ -2,6 +2,11 @@ import type { Configuration } from 'webpack';
 
 import { plugins } from './webpack.plugins';
 
+// Monaco bundling lives in THIS config on purpose: the shared `plugins` array
+// is also used by the main-process build, which must never see this plugin.
+// eslint-disable-next-line @typescript-eslint/no-var-requires
+const MonacoWebpackPlugin = require('monaco-editor-webpack-plugin');
+
 // Renderer-only module rules.
 //
 // The renderer runs in a BROWSER context: it has NO Node.js globals such as
@@ -37,7 +42,46 @@ export const rendererConfig: Configuration = {
   module: {
     rules: rendererRules,
   },
-  plugins,
+  // The shared plugins (fork-ts-checker) plus Monaco. The Monaco plugin is
+  // added HERE, for the renderer only: webpack.plugins.ts is also used by the
+  // main-process build, which must not bundle the editor. The plugin emits the
+  // language workers and the codicon font itself, so no extra asset/resource
+  // rule is required below.
+  plugins: [
+    ...plugins,
+    new MonacoWebpackPlugin({
+      languages: [
+        'typescript',
+        'javascript',
+        'json',
+        'css',
+        'scss',
+        'less',
+        'html',
+        'markdown',
+        'python',
+        'java',
+        'go',
+        'rust',
+        'ruby',
+        'php',
+        'csharp',
+        'kotlin',
+        'swift',
+        'scala',
+        'shell',
+        'powershell',
+        'yaml',
+        'xml',
+        'sql',
+        'c',
+        'cpp',
+        'ini'
+      ],
+      features: ['!gotoSymbol'],
+      filename: 'monaco-[name].worker.js'
+    })
+  ],
   resolve: {
     extensions: ['.js', '.ts', '.jsx', '.tsx', '.css'],
   },

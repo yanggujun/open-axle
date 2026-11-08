@@ -20,14 +20,16 @@ export class ExecutionResponse {
   print: boolean;
   format: string;
   mimeType: string;
+  persist: boolean;
 
-  constructor(content: string, prompt: string, sequential: boolean = false, print: boolean = false, format: string = '', mimeType: string = '') {
+  constructor(content: string, prompt: string, sequential: boolean = false, print: boolean = false, format: string = '', mimeType: string = '', persist: boolean = false) {
     this.content = content;
     this.prompt = prompt;
     this.sequential = sequential;
     this.print = print;
     this.format = format;
     this.mimeType = mimeType;
+    this.persist = persist;
   }
 
   /**
@@ -450,7 +452,10 @@ export function buildTextContentResult(ext: string, text: string): FileReadResul
     format = 'markdown';
   } else if (ext === '.svg') {
     content = text;
-    format = "svg";
+    format = 'svg';
+  } else if (ext === '.md') {
+    content = text;
+    format = '';
   } else {
     content = '```' + language + '\n' + text + '\n```';
     format = language;
@@ -743,9 +748,19 @@ export const SSH_SCHEME = /^ssh:\/\//i;
  * - `local`: an ordinary local filesystem path (absolute or relative).
  */
 
-export type WorkingDir =
-  { kind: 'remote'; serverName: string; path: string; server: Record<string, string> | null; } |
-  { kind: 'local'; path: string; };
+export class WorkingDir {
+  kind: string = '';
+  path: string = '';
+  serverName: string | null = '';
+  server: Record<string, string> | null = {};
+  constructor(kind: string = '', path: string = '', serverName: string | null = '', server: Record<string, string> | null = {}) {
+    this.kind = kind;
+    this.path = path;
+    this.serverName = serverName;
+    this.server = server;
+  }
+}
+
 /**
  * A single `{ name, value }` configuration item inside a skill entry of the
  * `.skill.config` file, exactly the shape consumed by {@link getSkillConfig}.

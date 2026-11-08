@@ -2,6 +2,7 @@ export interface Protocol {
   message: string;
   content: string;
   format: string; // text, hyperlink, path, md, py, java, ...
+  signal: string;
 }
 
 /** Simple event object mimicking asyncio.Event */
@@ -36,8 +37,10 @@ class AsyncEvent {
 }
 
 export abstract class Conduit {
-  abstract send(message: string, format?: string, content?: string): void;
-  abstract sendAsync(message: string, format?: string, content?: string): Promise<void>;
+  abstract send(protocol: Protocol): void;
+  abstract sendMessage(message: string, format?: string, content?: string): void;
+  abstract sendAsync(protocol: Protocol): Promise<void>;
+  abstract sendMessageAsync(message: string, format?: string, content?: string): Promise<void>;
 }
 
 export class QueuedConduit extends Conduit {
@@ -46,17 +49,26 @@ export class QueuedConduit extends Conduit {
   private _subscribers: Array<(message: any) => Promise<void>> = [];
   private _running: boolean = false;
   private _task: Promise<void> | null = null;
-  private _thread: any = null;
 
   // --- Conduit interface ---
 
-  send(message: string, format: string = '', content: string = ''): void {
-    const protocol: Protocol = { message, content, format };
+  sendMessage(message: string, format: string = '', content: string = ''): void {
+    const signal = '';
+    const protocol: Protocol = {message, format, content, signal};
     this.enqueue(protocol);
   }
 
-  async sendAsync(message: string, format: string = '', content: string = ''): Promise<void> {
-    const protocol: Protocol = { message, content, format };
+  send(protocol: Protocol): void {
+    this.enqueue(protocol);
+  }
+
+  async sendAsync(protocol: Protocol): Promise<void> {
+    await this.enqueueAsync(protocol);
+  }
+
+  async sendMessageAsync(message: string, format: string = '', content: string = ''): Promise<void> {
+    const signal = '';
+    const protocol: Protocol = {message, format, content, signal};
     await this.enqueueAsync(protocol);
   }
 
@@ -117,13 +129,25 @@ export class QueuedConduit extends Conduit {
 }
 
 export class ConsoleConduit extends Conduit {
-  send(message: string, format: string = '', content: string = ''): void {
+  send(protocol: Protocol): void {
+    if (protocol.message) {
+      console.log(protocol.message);
+    }
+  }
+
+  async sendAsync(protocol: Protocol): Promise<void> {
+    if (protocol.message) {
+      console.log(protocol.message);
+    }
+  }
+
+  sendMessage(message: string, format: string = '', content: string = ''): void {
     if (message) {
       console.log(message);
     }
   }
 
-  async sendAsync(message: string, format: string = '', content: string = ''): Promise<void> {
+  async sendMessageAsync(message: string, format: string = '', content: string = ''): Promise<void> {
     if (message) {
       console.log(message);
     }

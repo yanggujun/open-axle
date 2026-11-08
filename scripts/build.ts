@@ -182,8 +182,85 @@ async function main(): Promise<void> {
   // Ship the skill *.md docs next to the compiled skills in dist/skills.
   copyMdFiles();
 
+  // Copy raster image/icon assets (except .svg) from resources/ into build/
+  // BEFORE any electron-forge package/make run consumes them.
+  copyImageAssets();
+
   copyHanaClientNatives();
   console.log('[build] Skill bundling complete.');
+}
+
+// --- Image / icon asset copy -------------------------------------------------
+// The packaged app and the electron-forge makers expect the raster icons to sit
+// in the project-root 'build' folder. resources/app-icon.svg is intentionally
+// NOT copied: an SVG cannot be used as a window/exe/bundle icon, it is only the
+// rasterization source for scripts/make-icons.js.
+
+const SRC_RESOURCES = 'resources';
+const OUT_BUILD = 'build';
+
+/** Image/icon extensions that are copied from resources/ into build/. */
+const IMAGE_EXTS = new Set<string>([
+  '.png',
+  '.ico',
+  '.icns',
+  '.jpg',
+  '.jpeg',
+  '.gif',
+  '.bmp',
+  '.webp',
+  '.tif',
+  '.tiff',
+  '.avif',
+]);
+
+/** Recursively collect image/icon files under a directory, skipping *.svg. */
+function collectImageFiles(dir: string, out: string[] = []): string[] {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(dir, { withFileTypes: true });
+  } catch {
+    return out;
+  }
+  for (const entry of entries) {
+    const full = join(dir, entry.name);
+    if (entry.isDirectory()) {
+      if (SKIP_DIRS.has(entry.name)) continue;
+      collectImageFiles(full, out);
+    } else if (entry.isFile()) {
+      const ext = path.extname(entry.name).toLowerCase();
+      if (ext === '.svg') continue; // never copy SVG sources
+      if (IMAGE_EXTS.has(ext)) out.push(full);
+    }
+  }
+  return out;
+}
+
+/**
+ * Copy every image/icon file (except .svg) from resources/ into build/,
+ * creating build/ and any intermediate folders and preserving the relative
+ * subfolder structure of resources/.
+ */
+function copyImageAssets(): void {
+  if (!existsSync(SRC_RESOURCES) || !statSync(SRC_RESOURCES).isDirectory()) {
+    console.log(`[build] No ${SRC_RESOURCES}/ folder found, skipping image asset copy.`);
+    return;
+  }
+
+  const files = collectImageFiles(SRC_RESOURCES);
+  console.log(`[build] Found ${files.length} image/icon file(s) under ${SRC_RESOURCES} (svg excluded)`);
+
+  let copied = 0;
+  for (const src of files) {
+    const rel = path.relative(SRC_RESOURCES, src);
+    const dest = join(OUT_BUILD, rel);
+    mkdirSync(path.dirname(dest), { recursive: true });
+    copyFileSync(src, dest);
+    copied++;
+    console.log(`[build]   copied image: ${rel.split(sep).join('/')} -> ${dest.split(sep).join('/')}`);
+  }
+
+  console.log(`[build] Copied ${copied} image/icon file(s) into ${OUT_BUILD}/`);
 }
   function copyHanaClientNatives(): void {
     const srcDir = path.resolve(

@@ -6,6 +6,8 @@
 // workingDir.css; the window.axle bridge typings are declared globally in
 // renderer.ts.
 
+import { WorkingDir } from "./common/common";
+
 /**
  * A remote server entry discovered from the 'ssh' / 'scp' skills in
  * .skill.config. Mirrors the RemoteServer interface in src/core/executor.ts.
@@ -414,10 +416,7 @@ export function openFolderChooser(modelName: string): Promise<string | null> {
       }
 
       // --- Classify the persisted working dir (remote vs local) ---
-      let info:
-        | { kind: 'remote'; serverName: string; path: string }
-        | { kind: 'local'; path: string }
-        | null = null;
+      let info: WorkingDir | null = null;
       try {
         info = await window.axle.getWorkingDirInfo(modelName);
       } catch (e) {

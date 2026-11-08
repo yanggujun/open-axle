@@ -122,6 +122,39 @@ export class LlmConfig {
   }
 
   /**
+   * Update an EXISTING model and persist the change. `name` is the immutable
+   * key used to locate the entry and is NEVER modified here: a name supplied in
+   * `patch` is ignored. Only the fields present in `patch` are applied, so the
+   * values not being edited (active, workingDir, ...) are preserved.
+   * Returns the updated model, or null when no entry carries that name.
+   */
+  public updateModel(name: string, patch: Partial<ModelConfig>): ModelConfig | null {
+    const existing = this.config?.models?.find(m => m.name === name);
+    if (!existing) {
+      return null;
+    }
+
+    if (patch.url !== undefined) {
+      existing.url = String(patch.url);
+    }
+    if (patch.key !== undefined) {
+      existing.key = String(patch.key);
+    }
+    if (patch.model !== undefined) {
+      existing.model = String(patch.model);
+    }
+    if (patch.skillsFolder !== undefined) {
+      existing.skillsFolder = String(patch.skillsFolder);
+    }
+    if (patch.responses !== undefined) {
+      existing.responses = Boolean(patch.responses);
+    }
+
+    this.save();
+    return existing;
+  }
+
+  /**
    * Set the active (open) flag of a model by name and persist. Returns true if
    * the model was found and updated, false otherwise.
    */
@@ -205,7 +238,6 @@ function isDirectory(targetPath: string): boolean {
   }
 }
 /**
- * Flexible path parser used by {@link AxleAgent.cd}.
  *
  * When `input` has the form `ssh://<server>/<remotePath>` it is treated as a
  * remote path and the server and remote path are extracted. Otherwise the
@@ -274,13 +306,13 @@ export function parsePath(input: string | undefined): WorkingDir {
     }
     const resolvedServer = config && Object.keys(config).length > 0 ? config : null;
 
-    return { kind: 'remote', serverName, path: remotePath, server: resolvedServer };
+    return new WorkingDir('remote', remotePath, serverName, resolvedServer);
   }
 
   // Local path: collapse redundant slashes and drop a trailing slash, while
   // still allowing relative paths (we do not force a leading '/').
   const localPath = stripTrailingSlash(collapseSlashes(trimmed));
-  return { kind: 'local', path: localPath };
+  return new WorkingDir('local', localPath, null, null);
 }
 export function getSkillConfig(skillName: string, name: string): Record<string, string> {
   const appHome = getAppHome();

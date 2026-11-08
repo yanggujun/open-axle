@@ -292,7 +292,8 @@ function listFsFromPayload(payload: string | Record<string, any>, runtime?: Runt
     }
   }
 
-  const content = lines.join('\n');
+  // Wrap the listing in a bash code fence so it renders as a terminal-style block.
+  const content = '```bash\n' + lines.join('\n') + '\n```';
   return new ExecutionResponse(content, data.prompt, data.sequential, true);
 }
 
@@ -409,7 +410,8 @@ async function listFsFromPayloadRemote(
       }
     }
 
-    const content = outLines.join('\n');
+    // Wrap the listing in a bash code fence so it renders as a terminal-style block.
+    const content = '```bash\n' + outLines.join('\n') + '\n```';
     return new ExecutionResponse(content, data.prompt, data.sequential, true);
   } catch (e: any) {
     return `Failed to list remote entries over SSH: ${e.message}`;
