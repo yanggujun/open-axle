@@ -340,7 +340,10 @@ function changeFileFromPayload(payload: string | Record<string, any>, runtime?: 
     return _wrapResponse(`Failed to write file: ${e.message}`, sequential, prompt);
   }
 
-  return _wrapResponse(`Successfully changed file: ${fullPath} (operation=${data.operation})`, sequential, prompt);
+  const res = _wrapResponse(`Successfully changed file: ${fullPath} (operation=${data.operation})`, sequential, prompt);
+  res.format = 'diff';
+  res.misc = {'origin': original, 'new': newContent, 'path': fullPath};
+  return res;
 }
 
 // ---------------------------------------------------------------------------
@@ -445,7 +448,10 @@ async function changeFileFromPayloadRemote(
       return _wrapResponse(`Failed to write file: ${e.message}`, sequential, prompt);
     }
 
-    return _wrapResponse(`Successfully changed file: ${fullPath} (operation=${data.operation})`, sequential, prompt);
+    const res = _wrapResponse(`Successfully changed file: ${fullPath} (operation=${data.operation})`, sequential, prompt);
+    res.format = "diff";
+    res.misc = {'origin': original, 'new': newContent, 'path': fullPath};
+    return res;
   } catch (e: any) {
     return _wrapResponse(`Failed to change remote file over SSH: ${e.message}`, sequential, prompt);
   } finally {

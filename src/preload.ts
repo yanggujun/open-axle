@@ -28,9 +28,15 @@ export interface AxleBroadcast {
   /**
    * Conduit Protocol `signal`. When it is 'persistable' the chat log offers
    * hover buttons to save the message into the working directory or into its
-   * `.axle` folder as a skill.
+   * `.axle/skills` folder as a skill.
    */
   signal?: string;
+  /**
+   * Conduit Protocol `misc` metadata. For a `format === 'diff'` message (a
+   * successful `change_file` operation) this carries `origin` — the file text
+   * BEFORE the change — and `new` — the file text AFTER the change.
+   */
+  misc?: Record<string, string>;
 }
 
 /**
@@ -120,7 +126,7 @@ const axleApi = {
   /**
    * Save the text of a 'persistable' chat message into the agent's working
    * directory under a user-chosen name. With `asSkill` true the file is
-   * written into `<workingDir>/.axle` instead (the folder is created when it
+   * written into `<workingDir>/.axle/skills` instead (the folder is created when it
    * does not exist). LOCAL and remote (ssh://) working dirs are both
    * supported; an existing file is never overwritten, in which case it
    * resolves { ok: false, error }.
@@ -344,7 +350,7 @@ const axleApi = {
   canViewFile: (
     filePath: string,
     modelName?: string
-  ): Promise<{ viewable: boolean; reason: string }> =>
+  ): Promise<{ viewable: boolean; kind: '' | 'text' | 'image'; reason: string }> =>
     ipcRenderer.invoke('axle:canViewFile', filePath, modelName),
 
   /**
@@ -359,6 +365,28 @@ const axleApi = {
     modelName?: string
   ): Promise<{ ok: boolean; base64?: string; mimeType?: string; error?: string }> =>
     ipcRenderer.invoke('axle:readImageFile', filePath, modelName),
+
+  /**
+   * Search the directory that holds `basePath` for files whose NAME matches
+   * `query`, so the view-space path box can offer live file suggestions.
+   *
+   * `query` is used VERBATIM. A bare word such as 'abc' is a SUBSTRING match,
+   * so '1111abc11111.ts' is found too; when the query already looks like a
+   * regular expression it is compiled exactly as typed, with no conversion and
+   * no escaping. The search is recursive and reports regular files only.
+   *
+   * LOCAL directories are searched with the shared find helpers
+   * (src/common/find.ts). ssh:// paths run the remote OS' own bash find over
+   * the cached SSH connection, because those helpers only ever look at the
+   * local file system.
+   * Resolves { ok: true, paths } or { ok: false, error }.
+   */
+  findFiles: (
+    basePath: string,
+    query: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; paths?: string[]; error?: string }> =>
+    ipcRenderer.invoke('axle:findFiles', basePath, query, modelName),
 
   /**
    * Create an EMPTY file at `filePath` for the 'Files' tab's New File action.

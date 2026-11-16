@@ -20,6 +20,55 @@
       </div>
 
       <!--
+        VIEW SPACE (#view-space): the split area between the model chat and the
+        right dock. It stays hidden until a file is opened for viewing/editing
+        and then shows ONE TAB PER OPEN FILE. Only text/code files (Monaco, via
+        fileEditor.ts) and image files (imageViewer.ts) may be mounted here;
+        both modules run in their 'embedded' mode so they render into a panel
+        instead of the modal overlay. The header holds the tab strip, a ONE-SHOT
+        action that re-opens the active file in a modal dialog (left of the close
+        button, no pressed state), and the close button. The left-edge grip
+        resizes it horizontally, mirroring #right-workspace.
+      -->
+      <div id="view-space" class="view-space hidden">
+        <div class="view-space-resizer" title="Drag to resize"></div>
+        <div class="view-space-inner">
+          <div class="view-space-header">
+            <div id="view-space-tabs" class="view-space-tabs"></div>
+            <!--
+              FILE PATH BOX: shows the ACTIVE tab's file path as plain text,
+              with a magnifier INSIDE the box on its right that turns the same
+              box into a search field (typing queries the file tree and the
+              matches drop down below; pressing it again shows the plain path).
+
+              The markup is NOT written here: this is the SHARED searchable path
+              box built by buildPathBox() in src/pathBox.ts, the very same
+              control the code editor and the image preview render. src/
+              viewSpace.ts inserts it immediately before .view-space-actions, so
+              the tab strip, the path and the action buttons stay in one row.
+            -->
+            <div class="view-space-actions">
+              <button
+                id="view-space-modal"
+                class="view-space-btn view-space-modal"
+                type="button"
+                title="Open the active file in a modal dialog"
+                aria-label="Open the active file in a modal dialog"
+              ></button>
+              <button
+                id="view-space-close"
+                class="view-space-btn view-space-close"
+                type="button"
+                title="Close the view space"
+                aria-label="Close the view space"
+              >&times;</button>
+            </div>
+          </div>
+          <div id="view-space-panels" class="view-space-panels"></div>
+        </div>
+      </div>
+
+      <!--
         RIGHT column (#right-workspace): the pluggable tabbed dock. Its tab
         strip lives in a header ROW at the very top so it lines up with the
         model tab bar on the LEFT; the dock's panels fill the space below it.

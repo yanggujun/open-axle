@@ -9,6 +9,11 @@ import { Tail } from './core/tail';
 import { getRemoteServers, resolveSkillConfig } from './core/executor';
 import { parsePath } from './core/config';
 import { buildSshCacheKey, buildSshConnectConfig, getSshConn, sshExec, SshTarget } from './core/remote';
+// The GNU find port used by the finder/file-grep skills. The view-space path
+// box searches LOCAL directories through it, so a bare word is a substring
+// match ('abc' finds '1111abc11111.ts') and a regular expression is compiled
+// exactly as the user typed it.
+import { findFilesByName, findFilesRegex } from './common/find';
 import { execFile } from 'child_process';
 import * as http from 'http';
 import * as https from 'https';
@@ -1860,17 +1865,79 @@ function registerIpc(): void {
         } catch {
           continue;
         }
-        if (!out.includes(candidate)) out.push(candidate);
+        // Windows can hand back an 8.3 SHORT alias ('DGREFR~1.csv') instead of
+        // the real long name: a single-file copy published through the legacy
+        // FileName/FileNameW formats keeps the short form, and an Explorer
+        // CF_HDROP entry carries whichever short entry the file was created
+        // under. Paste derives the new entry's NAME from this path's basename,
+        // so a short alias silently renames the copy. realpath() resolves an
+        // 8.3 alias to its real long path (a documented Windows behaviour) and
+        // needs no extra API call; a path that no longer exists, or a path the
+        // OS refuses, keeps the string the clipboard carried.
+        let resolved = candidate;
+        try {
+          resolved = fs.realpathSync.native(candidate.replace(/[\\/]+$/, '')) || candidate;
+        } catch {
+          resolved = candidate;
+        }
+        if (!out.includes(resolved)) out.push(resolved);
       }
       return out;
     };
 
     try {
       if (process.platform === 'win32') {
+        // Every list-shaped source is COLLECTED and UNIONED; none of them
+        // returns early. Electron's async clipboard can hand back a CF_HDROP
+        // blob that holds only the FIRST path of a multiple-file copy, so a
+        // 'return keepLocal(dropped)' would silently drop the rest of the
+        // selection before the text list below is ever read. That early return
+        // is exactly why a multi-file copy used to paste a single entry.
+        const dropPaths: string[] = [];
         const dropBuffer = await readRawClipboardFormat('CF_HDROP');
         if (dropBuffer) {
           const dropped = parseDropFiles(dropBuffer);
-          if (dropped.length) return keepLocal(dropped);
+          if (dropped.length) dropPaths.push(...dropped);
+        }
+
+        // A MULTI-FILE copy is published as a NEWLINE-SEPARATED list in the
+        // TEXT formats ('text/uri-list' / CF_UNICODETEXT), which Explorer always
+        // sets, while the legacy FileNameW / FileName formats read below carry
+        // only the FIRST path. Reading the text list recovers every copied file
+        // even when CF_HDROP is missing OR TRUNCATED, so it is consulted next to
+        // CF_HDROP rather than only when CF_HDROP yields nothing.
+        const textPaths: string[] = [];
+        try {
+          const uriList = await readRawClipboardFormat('text/uri-list');
+          const rawText =
+            uriList && uriList.length > 0 ? uriList.toString('utf8') : await clipboard.readText();
+          if (rawText && rawText.length > 0 && rawText.length <= 8192) {
+            for (const line of rawText.split(/\r?\n/)) {
+              // decodeClipboardUri handles both a file:// URI list and bare
+              // absolute paths; existsSync rejects anything that is not a real
+              // file, so ordinary text on the clipboard is never mistaken for
+              // a copied file.
+              const decoded = decodeClipboardUri(line);
+              if (!decoded) continue;
+              try {
+                if (!fs.existsSync(decoded)) continue;
+              } catch {
+                continue;
+              }
+              textPaths.push(decoded);
+            }
+          }
+        } catch {
+          // Reading the text formats is best-effort; the name formats below
+          // still handle a single copied file.
+        }
+
+        // The UNION of both list-shaped sources: CF_HDROP first (Explorer's
+        // native form), then the text list. keepLocal de-duplicates the
+        // overlap, so an entry reported by both appears once, and it also
+        // expands any Windows 8.3 alias to the real long name.
+        if (dropPaths.length || textPaths.length) {
+          return keepLocal(dropPaths.concat(textPaths));
         }
 
         // A single-file copy (some dialogs) exposes only the name formats.
@@ -2006,7 +2073,7 @@ function registerIpc(): void {
   // sandboxed and cannot touch the filesystem.
   //
   //   asSkill = false -> write into the agent's current working directory;
-  //   asSkill = true  -> write into `<workingDir>/.axle` (created if missing).
+  //   asSkill = true  -> write into `<workingDir>/.axle/skills` (created if missing).
   //
   // LOCAL working dirs are written with fs; ssh:// working dirs are written
   // over the CACHED SFTP session, so saving never opens a new SSH connection.
@@ -2049,7 +2116,7 @@ function registerIpc(): void {
         const workingDirStr = resolveAgent(modelName)?.getCwd() ?? process.cwd();
         const parsed = overrideDir ? parsePath(overrideDir) : parsePath(workingDirStr);
 
-        // 'Save as Skill' targets `<workingDir>/.axle`.
+        // 'Save as Skill' targets `<workingDir>/.axle/skills`.
         const isSkill = asSkill === true;
 
         if (parsed.kind === 'remote') {
@@ -2058,7 +2125,7 @@ function registerIpc(): void {
             return { ok: false, error: resolved.error || 'Unknown remote server' };
           }
           const baseDir = (parsed.path || '.').replace(/\/+$/, '');
-          const dir = isSkill ? `${baseDir}/.axle` : baseDir;
+          const dir = isSkill ? `${baseDir}/.axle/skills` : baseDir;
           const fullPath = `${dir}/${fileName}`;
 
           const sftp = await getRemoteSftp(resolved.target, resolved.key);
@@ -2067,7 +2134,7 @@ function registerIpc(): void {
 
           // Refuse to overwrite an existing file.
           if (await remoteFileExists(sftp, fullPath)) {
-            return { ok: false, error: '"' + fileName + '" already exists in ' + (isSkill ? 'the .axle folder' : 'the working directory') + '.' };
+            return { ok: false, error: '"' + fileName + '" already exists in ' + (isSkill ? 'the .axle/skills folder' : 'the working directory') + '.' };
           }
 
           await sftpWriteFile(sftp, fullPath, content);
@@ -2076,7 +2143,7 @@ function registerIpc(): void {
 
         // LOCAL working dir.
         const baseDir = parsed.path;
-        const dir = isSkill ? path.join(baseDir, '.axle') : baseDir;
+        const dir = isSkill ? path.join(baseDir, '.axle', 'skills') : baseDir;
         const fullPath = path.join(dir, fileName);
 
         // The resolved path must stay INSIDE the target directory.
@@ -2101,7 +2168,7 @@ function registerIpc(): void {
           try { clash = fs.existsSync(fullPath); } catch { clash = false; }
         }
         if (clash) {
-          return { ok: false, error: '"' + fileName + '" already exists in ' + (isSkill ? 'the .axle folder' : 'the working directory') + '.' };
+          return { ok: false, error: '"' + fileName + '" already exists in ' + (isSkill ? 'the .axle/skills folder' : 'the working directory') + '.' };
         }
 
         // 'wx' also covers the race where the file appears just now.
@@ -2110,7 +2177,7 @@ function registerIpc(): void {
         } catch (writeErr) {
           const code = (writeErr as NodeJS.ErrnoException).code;
           if (code === 'EEXIST') {
-            return { ok: false, error: '"' + fileName + '" already exists in ' + (isSkill ? 'the .axle folder' : 'the working directory') + '.' };
+            return { ok: false, error: '"' + fileName + '" already exists in ' + (isSkill ? 'the .axle/skills folder' : 'the working directory') + '.' };
           }
           throw writeErr;
         }
@@ -2147,24 +2214,50 @@ function registerIpc(): void {
     return '';
   };
 
-  // Report whether a file may be previewed by the 'View' menu item. The
-  // decision needs no SSH connection: the extension whitelist alone answers it,
-  // so a remote directory can show the enabled/disabled item immediately.
+  // Extension-only TEXT verdict, shared by LOCAL and REMOTE paths so neither
+  // needs a connection just to enable the menu item. The same three maps the
+  // Edit path uses decide it, so 'View' and 'Edit' agree on what is text.
+  const textExtensionViewable = (ext: string): boolean =>
+    Boolean(
+      CODE_EXTENSION_LANGUAGE_MAP[ext] ||
+      TEXT_EXTENSION_MIME_MAP[ext] ||
+      PURE_TEXT_EXTENSION_MIME_MAP[ext]
+    );
+
+  // Report whether a file may be previewed by the 'View' menu item. TWO kinds
+  // of file are viewable now: IMAGES (image viewer) and TEXT files (read-only
+  // Monaco). The decision still needs no SSH connection: the extension
+  // whitelists answer it for a remote path, so a remote directory can show the
+  // enabled/disabled item immediately. A LOCAL file whose extension is not
+  // listed is additionally SNIFFED with isProbablyTextFile, so a text file with
+  // an unknown or missing extension is viewable too. `kind` tells the renderer
+  // which viewer to open.
   ipcMain.handle('axle:canViewFile', async (_e, filePath: string, _modelName?: string) => {
     try {
       if (!filePath) {
-        return { viewable: false, reason: 'No file selected' };
+        return { viewable: false, kind: '', reason: 'No file selected' };
       }
       const parsed = parsePath(filePath);
       const ext = path.extname(parsed.path).toLowerCase();
-      if (!imageMimeTypeFor(ext)) {
-        return { viewable: false, reason: 'Not an image file' };
+
+      // Images FIRST: SVG lives in TEXT_EXTENSION_MIME_MAP, yet the user
+      // expects it to open in the image viewer, not in the text editor.
+      if (imageMimeTypeFor(ext)) {
+        return { viewable: true, kind: 'image', reason: '' };
       }
-      return { viewable: true, reason: '' };
+      if (textExtensionViewable(ext)) {
+        return { viewable: true, kind: 'text', reason: '' };
+      }
+      // A byte sniff is only possible for a LOCAL path: reading the head of an
+      // ssh:// file would open a connection just to paint a context menu.
+      if (parsed.kind !== 'remote' && isProbablyTextFile(parsed.path)) {
+        return { viewable: true, kind: 'text', reason: '' };
+      }
+      return { viewable: false, kind: '', reason: 'Not a viewable file' };
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('[axle] Failed to check file previewability:', msg);
-      return { viewable: false, reason: msg };
+      return { viewable: false, kind: '', reason: msg };
     }
   });
 
@@ -2203,6 +2296,105 @@ function registerIpc(): void {
     } catch (error) {
       const msg = error instanceof Error ? error.message : String(error);
       console.error('[axle] Failed to read image file:', msg);
+      return { ok: false, error: msg };
+    }
+  });
+
+  // ---- File search for the view-space path box ----
+  //
+  // The view-space header shows the ACTIVE file's path; its toggle turns that
+  // box into a search field, and every keystroke is turned into a query here.
+  //
+  // Two engines, one contract:
+  //
+  //   - LOCAL directories are searched with the shared GNU find port
+  //     (src/common/find.ts), the very helper the finder/file-grep skills use.
+  //     A bare word is a SUBSTRING match ('abc' also finds '1111abc11111.ts');
+  //     a query that already contains regular-expression metacharacters is
+  //     compiled exactly as typed, with no conversion and no escaping.
+  //   - ssh:// paths run the REMOTE operating system's own bash find over the
+  //     cached SSH connection, because the port above only ever sees the local
+  //     disk. The pattern is single-quoted so the remote shell cannot expand it.
+  //
+  // Only regular files are reported: the box exists to open a file, and a
+  // directory would only ever fall back to the modal dialogs.
+  const FIND_MAX_RESULTS = 200;
+
+  // A query that already looks like a regular expression is passed through
+  // untouched. The test is deliberately conservative - any metacharacter means
+  // 'the user meant a pattern' - because escaping a pattern the user typed
+  // would silently change its meaning.
+  const looksLikeRegex = (query: string): boolean => /[*+?[\]{}()|^$\\]/.test(query);
+
+  // Quote one word for a POSIX shell, exactly like axle:listRemoteDir above:
+  // wrap in single quotes and close/reopen around every embedded quote.
+  const quoteShellWord = (word: string): string => "'" + word.replace(/'/g, "'\\''") + "'";
+
+  ipcMain.handle('axle:findFiles', async (_e, basePath: string, query: string, modelName?: string) => {
+    try {
+      const text = typeof query === 'string' ? query : '';
+      if (!basePath) {
+        return { ok: false, error: 'No directory to search' };
+      }
+      // An empty box is not a search: report no matches instead of walking the
+      // whole tree once per deleted character.
+      if (!text) {
+        return { ok: true, paths: [] };
+      }
+
+      const parsed = parsePath(basePath);
+      const isRegex = looksLikeRegex(text);
+
+      // Remote (ssh://) directory: use the find util the remote OS already has.
+      // -regextype posix-extended is what lets a raw regular expression be used
+      // as typed.
+      if (parsed.kind === 'remote') {
+        const resolved = resolveRemoteTarget(parsed.serverName, modelName);
+        if (resolved.error || !resolved.target) {
+          return { ok: false, error: resolved.error || 'Unknown remote server' };
+        }
+        const dir = parsed.path || '.';
+        const pattern = isRegex ? text : '*' + text + '*';
+        const remoteCmd = isRegex
+          ? 'find ' + quoteShellWord(dir) + ' -type f -regextype posix-extended -regex ' +
+            quoteShellWord(pattern) + ' 2>/dev/null'
+          : 'find ' + quoteShellWord(dir) + ' -type f -name ' +
+            quoteShellWord(pattern) + ' 2>/dev/null';
+        const stdout = await sshExec(resolved.target, remoteCmd);
+        const prefix = 'ssh://' + parsed.serverName;
+        const found: string[] = [];
+        const lines = stdout.split(/\r?\n/);
+        for (let i = 0; i < lines.length && found.length < FIND_MAX_RESULTS; i++) {
+          const line = lines[i].trim();
+          if (!line) continue;
+          found.push(line.charAt(0) === '/' ? prefix + line : prefix + '/' + line);
+        }
+        return { ok: true, paths: found };
+      }
+
+      // LOCAL directory: search it with the shared find port. When the active
+      // tab points AT a file, its directory is what gets searched.
+      let root = parsed.path;
+      try {
+        if (fs.statSync(root).isFile()) {
+          root = path.dirname(root);
+        }
+      } catch (err) {
+        // A vanished path is not fatal: search the path as given.
+      }
+
+      const result = isRegex
+        ? await findFilesRegex(root, text, { type: 'f', maxResults: FIND_MAX_RESULTS })
+        : await findFilesByName(root, text, { type: 'f', maxResults: FIND_MAX_RESULTS });
+
+      const paths: string[] = [];
+      for (let i = 0; i < result.entries.length; i++) {
+        paths.push(result.entries[i].path);
+      }
+      return { ok: true, paths };
+    } catch (error) {
+      const msg = error instanceof Error ? error.message : String(error);
+      console.error('[axle] Failed to find files:', msg);
       return { ok: false, error: msg };
     }
   });

@@ -39,6 +39,14 @@ import type { RightTabContext, RightTabInstance } from './rightWorkspace';
 import { getFileIcon } from './fileIcons';
 import { openFileEditor } from './fileEditor';
 import { openImageViewer } from './imageViewer';
+// The tabbed area between the chat and the right dock. openInViewSpace returns
+// FALSE only when it declined the request (area missing, or the area cannot
+// render the requested kind), which is the cue to fall back to the modal
+// dialogs above. The header's modal button is a one-shot action, not a mode,
+// so it never diverts a request away from the view space. isTextFilePath is the
+// renderer-side capability check for the text route: it accepts SVG, whose
+// source is XML text even though the main process also offers it as a picture.
+import { openInViewSpace, isTextFilePath } from './viewSpace';
 
 /** The dock tab id used to open this view. */
 export const FILES_TAB_ID = 'files';
@@ -108,7 +116,12 @@ interface FilesBridge {
   canViewFile(
     filePath: string,
     modelName?: string
-  ): Promise<{ viewable: boolean; reason: string; }>;
+  ): Promise<{
+    viewable: boolean;
+    /** Which viewer to open: 'image', 'text', or '' when not viewable. */
+    kind?: 'image' | 'text' | '';
+    reason: string;
+  }>;
   /**
    * Read an image as base64 plus its MIME type so the 'View' dialog can build a
    * data: URI. Local files are read from disk; ssh:// paths are fetched over
@@ -150,6 +163,19 @@ interface FilesBridge {
    * copy 2', ...) and the final path comes back in `path`.
    */
   copyEntry?(
+    srcPath: string,
+    destPath: string,
+    modelName?: string
+  ): Promise<{ ok: boolean; error?: string; path?: string; }>;
+  /**
+   * Rename (MOVE) an entry in place: `destPath` is the entry's full NEW path,
+   * normally the same directory under a different name. An existing destination
+   * is never overwritten (the clash comes back as an error) and remote (ssh://)
+   * paths ride the cached SSH/SFTP connection in main. When the bridge does not
+   * offer this channel the Rename button falls back to copyEntry + deleteEntry,
+   * which renames an entry in BOTH worlds as well.
+   */
+  renameEntry?(
     srcPath: string,
     destPath: string,
     modelName?: string
@@ -318,6 +344,7 @@ let actionButtons: {
   newFolder: HTMLButtonElement;
   copyFile: HTMLButtonElement;
   paste: HTMLButtonElement;
+  rename: HTMLButtonElement;
   deleteEntry: HTMLButtonElement;
 } | null = null;
 
@@ -343,7 +370,7 @@ function markSelected(row: HTMLElement, key: string, entry: SelectedEntry): void
  * New File / New Folder need an open directory (they create inside it),
  * Copy needs any selected entry (files AND folders are copyable), Paste needs
  * something already copied plus a destination directory to paste into, and
- * Delete needs any selected entry.
+ * Rename / Delete need any selected entry.
  */
 function updateActionButtons(): void {
   if (!actionButtons) return;
@@ -359,6 +386,9 @@ function updateActionButtons(): void {
   const localListing = currentKind !== 'remote';
   const hasPasteSource = Boolean(clipboardEntry) || (localListing && systemClipboardCount > 0);
   actionButtons.paste.disabled = !(hasDir && hasPasteSource);
+  // Renaming acts on the selected entry in the directory it already lives in,
+  // so it needs a selection exactly like Delete does.
+  actionButtons.rename.disabled = !(hasDir && entry);
   actionButtons.deleteEntry.disabled = !(hasDir && entry);
 }
 
@@ -663,7 +693,11 @@ async function createEntry(kind: 'file' | 'folder'): Promise<void> {
       window.alert((result && result.error) || 'Unable to create the entry.');
       return;
     }
-    refreshFiles();
+    // Keep the tree expanded and open the folder the entry was created in, so
+    // the new row is visible immediately instead of hiding behind collapsed
+    // parents (refreshFiles would reset the tracking and collapse everything).
+    ensureExpanded(location);
+    await refreshListingInPlace();
   } catch (e) {
     window.alert(e instanceof Error ? e.message : String(e));
   }
@@ -781,7 +815,12 @@ async function pastePathList(
   if (failures.length) {
     window.alert('Some entries could not be pasted:\n\n' + failures.join('\n'));
   }
-  refreshFiles();
+  // Refresh WITHOUT resetting the tracked directories (refreshFiles would
+  // collapse every expanded folder), and make the destination itself expanded so
+  // the pasted entry is on screen right away - even when that folder had never
+  // been opened before.
+  ensureExpanded(location);
+  await refreshListingInPlace();
 }
 
 async function pasteClipboard(): Promise<void> {
@@ -841,7 +880,10 @@ async function pasteClipboard(): Promise<void> {
       window.alert((result && result.error) || 'Unable to paste the entry.');
       return;
     }
-    refreshFiles();
+    // Same refresh as pastePathList: keep the tree expanded and open the folder
+    // the entry was pasted into, without collapsing the rest of the listing.
+    ensureExpanded(location);
+    await refreshListingInPlace();
   } catch (e) {
     window.alert(e instanceof Error ? e.message : String(e));
   }
@@ -881,10 +923,131 @@ async function deleteSelectedEntry(): Promise<void> {
     selectedFileKey = null;
     selectedRowEl = null;
     updateActionButtons();
-    refreshFiles();
+    // Re-list in place so the folders the user has opened stay open; the deleted
+    // row simply disappears from its parent (refreshFiles would collapse the
+    // whole tree by resetting the tracked directories).
+    await refreshListingInPlace();
   } catch (e) {
     window.alert(e instanceof Error ? e.message : String(e));
   }
+}
+
+/**
+ * Rename the selected file or folder (Rename button).
+ *
+ * The new name is asked for in the SAME inline modal New File / New Folder use,
+ * pre-filled with the current name, and the entry is renamed INSIDE the
+ * directory it was selected in - a rename never moves it elsewhere. Nothing is
+ * overwritten: an existing destination stops the rename, so a typo can never
+ * destroy a neighbour.
+ *
+ * LOCAL and REMOTE entries take the same route. A bridge-native renameEntry is
+ * used when main offers one; otherwise the rename is emulated with the existing
+ * copyEntry + deleteEntry pair (main copies files and folders recursively, and
+ * over the cached SSH/SFTP connection for ssh:// paths), which is why the same
+ * button works for both worlds without any new IPC channel. Because copyEntry
+ * never overwrites, it reports a FREE name on a clash: a final name that differs
+ * from the requested one therefore means the destination already existed, and
+ * the stray copy is removed again instead of being left behind ('name copy').
+ */
+async function renameSelectedEntry(): Promise<void> {
+  const entry = selectedEntry;
+  if (!entry) return;
+
+  const axle = getAxle();
+  if (!axle) {
+    window.alert('Renaming is unavailable: the application bridge is not ready.');
+    return;
+  }
+
+  const newName = await askForName('Rename to:', entry.name, 'Rename');
+  if (!newName || newName === entry.name) return;
+  if (!isPlainName(newName)) {
+    window.alert('Please enter a plain name, without a directory part.');
+    return;
+  }
+
+  const modelName = currentModelName ?? undefined;
+  const server = entry.server || remoteServerName;
+  // The entry stays in its own directory: only the name part changes, and the
+  // ssh:// prefix is added for REMOTE targets exactly like Paste does.
+  const destPath = entry.remote
+    ? 'ssh://' + server + joinRemotePath(entry.dir, newName)
+    : joinPath(entry.dir, newName);
+
+  const renameEntry = axle.renameEntry;
+  const copyEntry = axle.copyEntry;
+  const deleteEntry = axle.deleteEntry;
+
+  try {
+    if (typeof renameEntry === 'function') {
+      // Preferred: a single move, decided entirely by main.
+      const result = await renameEntry(entry.path, destPath, modelName);
+      if (!result || !result.ok) {
+        window.alert((result && result.error) || 'Unable to rename the entry.');
+        return;
+      }
+    } else if (typeof copyEntry === 'function' && typeof deleteEntry === 'function') {
+      // Fallback that covers LOCAL and REMOTE paths alike: copy under the new
+      // name, then drop the original.
+      const copied = await copyEntry(entry.path, destPath, modelName);
+      if (!copied || !copied.ok) {
+        window.alert((copied && copied.error) || 'Unable to rename the entry.');
+        return;
+      }
+      // A name we did NOT ask for means the destination was already taken.
+      const landedOn = copied.path || destPath;
+      if (normalizeDirPath(landedOn) !== normalizeDirPath(destPath)) {
+        const cleanup = await deleteEntry(landedOn, modelName);
+        window.alert(
+          cleanup && cleanup.ok
+            ? 'An entry named "' + newName + '" already exists.'
+            : 'An entry named "' + newName + '" already exists, and the copy made under "' +
+              landedOn + '" could not be removed.'
+        );
+        return;
+      }
+      const removed = await deleteEntry(entry.path, modelName);
+      if (!removed || !removed.ok) {
+        window.alert(
+          'The entry was copied to "' + newName + '" but the original could not be removed: ' +
+            ((removed && removed.error) || 'unknown error')
+        );
+      }
+    } else {
+      window.alert('Renaming is unavailable: the application bridge is not ready.');
+      return;
+    }
+  } catch (e) {
+    window.alert(e instanceof Error ? e.message : String(e));
+    return;
+  }
+
+  // A renamed FOLDER must be forgotten under its OLD path: the poll loop would
+  // otherwise keep listing a directory that no longer exists.
+  if (entry.type === 'folder') {
+    forgetSubtree(
+      entry.remote
+        ? dirKey('remote', joinRemotePath(entry.dir, entry.name), server)
+        : dirKey('local', joinPath(entry.dir, entry.name))
+    );
+  }
+
+  // Keep the renamed entry selected: the repaint below re-applies the highlight
+  // from this key, so the row the toolbar acts on is still the same entry.
+  selectedFileKey = fileKey(entry.dir, newName);
+  selectedRowEl = null;
+  selectedEntry = {
+    dir: entry.dir,
+    name: newName,
+    type: entry.type,
+    remote: entry.remote,
+    server: entry.server,
+    path: destPath
+  };
+  // Refresh WITHOUT resetting the tracked directories, so every expanded folder
+  // stays open and the renamed row shows up under its new name.
+  await refreshListingInPlace();
 }
 
 // ---- File context menu (right-click -> 'View' / 'Edit') ----
@@ -979,17 +1142,40 @@ async function startEditFile(
       return;
     }
 
+    const save = async (text: string) => {
+      const written = await axle.writeFileRaw!(filePath, text, modelName);
+      // Remote directories have no filesystem watcher, so re-list them
+      // explicitly after a successful save; local ones refresh on their own.
+      if (written && written.ok && isRemote) refreshFiles();
+      return written;
+    };
+
+    // Default destination: the tabbed view space between the chat and the dock.
+    // It only accepts text/code files, and it returns false when the area is
+    // absent or cannot render this kind - in which case the modal editor below
+    // keeps the old behaviour. The header's modal button sets no mode, so an
+    // Edit request always lands here when the area can draw the file.
+    // The capability check (not the single preferred label) decides the text
+    // route: an SVG is reported as an image by the main process yet its source
+    // is XML, so it must still be able to open as an editable Monaco tab.
+    if (
+      isTextFilePath(filePath) &&
+      openInViewSpace({
+        filePath,
+        fileName,
+        kind: 'text',
+        content: read.content,
+        save
+      })
+    ) {
+      return;
+    }
+
     openFileEditor({
       fileName,
       filePath,
       content: read.content,
-      save: async (text) => {
-        const written = await axle.writeFileRaw!(filePath, text, modelName);
-        // Remote directories have no filesystem watcher, so re-list them
-        // explicitly after a successful save; local ones refresh on their own.
-        if (written && written.ok && isRemote) refreshFiles();
-        return written;
-      }
+      save
     });
   } catch (e) {
     console.error('[filesTab] Failed to open the editor for', filePath, e);
@@ -998,24 +1184,76 @@ async function startEditFile(
 }
 
 /**
- * Read an image and show it in the preview dialog.
+ * Show a file in the read-only viewer named by the verdict's `kind`.
  *
- * The viewability verdict is re-checked here even though the menu item is
- * already disabled for other files: the check is cheap and keeps the read path
- * guarded no matter how the menu was reached. Failures surface through
- * window.alert, exactly like the 'Edit' path.
+ * An IMAGE opens in the image preview dialog (readImageFile -> data: URI). A
+ * TEXT file opens in the SAME Monaco dialog the 'Edit' item uses, but built
+ * view-only: no save callback is supplied, so no Save button is rendered, the
+ * buffer cannot be typed into and no changes can ever be written back. Both
+ * kinds read through the channel that already exists for them, so the read
+ * path stays as guarded as it was.
+ *
+ * The verdict is re-checked here even though the menu item is already
+ * disabled for other files: the check is cheap and keeps the read path guarded
+ * no matter how the menu was reached. Failures surface through window.alert,
+ * exactly like the 'Edit' path.
  */
 async function startViewFile(
   filePath: string,
   fileName: string,
-  viewable: boolean
+  viewable: boolean,
+  kind: 'image' | 'text' | ''
 ): Promise<void> {
   const modelName = currentModelName ?? undefined;
   closeFileContextMenu();
   if (!viewable) return;
 
   const axle = getAxle();
-  if (!axle || typeof axle.readImageFile !== 'function') return;
+  if (!axle) return;
+
+  // TEXT: reuse the raw reader the 'Edit' item already uses (no code fence, no
+  // CSV-to-table rendering) and mount it in a VIEW-ONLY editor. Because no
+  // save callback is passed, openFileEditor renders no Save button, refuses
+  // edits and never asks to discard anything on close.
+  if (kind === 'text') {
+    if (typeof axle.readFileRaw !== 'function') return;
+    try {
+      const read = await axle.readFileRaw(filePath, modelName);
+      if (!read || !read.ok || typeof read.content !== 'string') {
+        window.alert((read && read.error) || 'Unable to read this file.');
+        return;
+      }
+      // Default destination: a VIEW-ONLY tab in the view space. readOnly keeps
+      // the same guarantees as the modal editor (no Save button, no edits, no
+      // discard prompt), because openFileEditor is asked for a view-only
+      // instance either way. A declined request falls back to the modal below.
+      if (
+        isTextFilePath(filePath) &&
+        openInViewSpace({
+          filePath,
+          fileName,
+          kind: 'text',
+          content: read.content,
+          readOnly: true
+        })
+      ) {
+        return;
+      }
+
+      openFileEditor({
+        fileName,
+        filePath,
+        content: read.content,
+        readOnly: true
+      });
+    } catch (e) {
+      console.error('[filesTab] Failed to view the text file', filePath, e);
+      window.alert(e instanceof Error ? e.message : String(e));
+    }
+    return;
+  }
+
+  if (typeof axle.readImageFile !== 'function') return;
 
   try {
     const result = await axle.readImageFile(filePath, modelName);
@@ -1026,6 +1264,22 @@ async function startViewFile(
       typeof result.mimeType !== 'string'
     ) {
       window.alert((result && result.error) || 'Unable to read this image.');
+      return;
+    }
+
+    // Default destination: an image tab in the view space, which embeds the
+    // very same viewer this function used to open modally. A declined request
+    // (area absent, or the kind cannot be rendered here) falls back to the
+    // modal preview below so the action never silently does nothing.
+    if (
+      openInViewSpace({
+        filePath,
+        fileName,
+        kind: 'image',
+        mimeType: result.mimeType,
+        base64: result.base64
+      })
+    ) {
       return;
     }
 
@@ -1048,8 +1302,14 @@ interface FileContextMenuOptions {
   fileName: string;
   editable: boolean;
   reason: string;
-  /** True when the file is a whitelisted image, so 'View' is enabled. */
+  /** True when the file is viewable, so 'View' is enabled (image OR text). */
   viewable: boolean;
+  /**
+   * Which viewer the verdict chose: 'image' opens the preview dialog, 'text'
+   * opens the read-only editor. Left out (or '') when nothing is viewable, so
+   * the failure call sites need no change.
+   */
+  viewKind?: 'image' | 'text' | '';
   /** Tooltip shown on the disabled 'View' item (why it cannot be shown). */
   viewReason: string;
   /** True for ssh:// entries: their saves need an explicit listing refresh. */
@@ -1071,19 +1331,23 @@ function openFileContextMenu(opts: FileContextMenuOptions): void {
   const menu = document.createElement('div');
   menu.className = 'files-ctxmenu';
 
-  // 'View' comes first: previewing an image is a read-only action, listed above
-  // the editor as it is in most file browsers.
+  // 'View' comes first: showing a file is a read-only action, listed above the
+  // editor as it is in most file browsers. It covers BOTH kinds of file now:
+  // an image opens the preview dialog and a text file opens the read-only
+  // editor, so the item is enabled whenever the verdict is viewable.
   const viewItem = document.createElement('div');
   viewItem.className = 'files-ctxmenu-item';
   viewItem.textContent = 'View';
   if (!opts.viewable) {
     viewItem.classList.add('disabled');
-    viewItem.title = opts.viewReason || 'This file is not an image';
+    viewItem.title = opts.viewReason || 'This file cannot be viewed';
+  } else if (opts.viewKind === 'text') {
+    viewItem.title = 'Show ' + opts.fileName + ' (read-only)';
   } else {
     viewItem.title = 'Show ' + opts.fileName;
   }
   viewItem.addEventListener('click', () => {
-    void startViewFile(opts.filePath, opts.fileName, opts.viewable);
+    void startViewFile(opts.filePath, opts.fileName, opts.viewable, opts.viewKind || '');
   });
   menu.appendChild(viewItem);
 
@@ -1625,6 +1889,7 @@ async function renderDir(container: HTMLElement, dir: string): Promise<void> {
             ? axle.canViewFile(filePath, modelName)
             : Promise.resolve({
                 viewable: false,
+                kind: '' as const,
                 reason: 'Preview is unavailable: the application bridge is not ready.'
               });
 
@@ -1637,6 +1902,10 @@ async function renderDir(container: HTMLElement, dir: string): Promise<void> {
               editable: Boolean(verdict && verdict.editable),
               reason: (verdict && verdict.reason) || '',
               viewable: Boolean(preview && preview.viewable),
+              // 'image' or 'text': tells the View item which viewer to open.
+              // Text files are viewable too, so this can no longer gate on
+              // images alone.
+              viewKind: (preview && preview.kind) || '',
               viewReason: (preview && preview.reason) || '',
               isRemote: false
             });
@@ -1951,6 +2220,7 @@ async function renderRemoteDir(
           ? axle.canViewFile(remotePath, modelName)
           : Promise.resolve({
               viewable: false,
+              kind: '' as const,
               reason: 'Preview is unavailable: the application bridge is not ready.'
             });
 
@@ -1963,6 +2233,10 @@ async function renderRemoteDir(
             editable: Boolean(verdict && verdict.editable),
             reason: (verdict && verdict.reason) || '',
             viewable: Boolean(preview && preview.viewable),
+            // A remote TEXT file is viewable as well: the verdict is decided
+            // from the file name alone (no connection), and the content is
+            // fetched over the cached SFTP session only when View is clicked.
+            viewKind: (preview && preview.kind) || '',
             viewReason: (preview && preview.reason) || '',
             isRemote: true
           });
@@ -2089,6 +2363,48 @@ async function loadRoot(): Promise<void> {
 }
 
 /**
+ * Re-render the listing that is currently on screen WITHOUT dropping the tracked
+ * directories, so every folder the user has expanded STAYS expanded.
+ *
+ * loadRoot() / refreshFiles() reset the tracking on purpose: they are meant for a
+ * NEW working directory, where the previous expansion state is meaningless. An
+ * action that only adds or copies an entry INSIDE the directory being displayed
+ * (Paste, New File, New Folder) must not do that - dropping the state collapses
+ * every expanded sub-folder, which also hides the entry that was just created or
+ * pasted. Here the same root is simply listed again: renderDir /
+ * renderRemoteDir re-open the folders still recorded in expandedDirs.
+ */
+async function refreshListingInPlace(): Promise<void> {
+  if (!bodyEl) return;
+  if (currentKind === 'remote') {
+    if (!remoteServerName) return;
+    await renderRemoteDir(bodyEl, remoteServerName, currentRemoteDir);
+  } else if (currentKind === 'local') {
+    if (!rootPath) return;
+    await renderDir(bodyEl, rootPath);
+  }
+  updateActionButtons();
+}
+
+/**
+ * Record `location.dir` as expanded so the next listing paint OPENS it and lists
+ * its children.
+ *
+ * Used after Paste so an entry copied into a folder that had never been expanded
+ * is immediately visible: while restoring the tree, renderDir /
+ * renderRemoteDir expand every folder still recorded in expandedDirs instead of
+ * leaving the destination collapsed and hiding the new entry.
+ */
+function ensureExpanded(location: { dir: string; remote: boolean; server: string }): void {
+  if (!location.dir) return;
+  expandedDirs.add(
+    location.remote
+      ? dirKey('remote', location.dir, location.server)
+      : dirKey('local', location.dir)
+  );
+}
+
+/**
  * Commit a user-typed path from the editable box: hand it to the renderer's
  * typed-path handler, which VERIFIES it and, only when valid, changes the
  * active model's working directory. On success the box keeps the typed value
@@ -2143,6 +2459,164 @@ async function commitTypedPath(): Promise<void> {
  * .files-card holds a header, a path row (the '...' Change Dir button plus an
  * EDITABLE current-dir box) and a scrollable list.
  */
+// ---- '\u2026' (More actions) popup: Copy / Paste / Delete off the row ----
+//
+// The path row is kept short by moving Copy, Paste and Delete into a small popup
+// opened by the '\u2026' button at its right end - the last thing on the row. The
+// SAME button elements are MOVED into the panel (appendChild re-parents a node),
+// so their click handlers and their enabled/disabled state - driven by
+// updateActionButtons - keep working exactly as before, and the Ctrl+C / Ctrl+V
+// shortcuts are untouched. Delete keeps its own confirmation prompt; only its
+// PLACEMENT changed, never what it does.
+
+/** The '\u2026' (More actions) button at the right end of the path row. */
+let miscButtonEl: HTMLButtonElement | null = null;
+
+/** The single open '\u2026' popup, if any. */
+let miscMenuEl: HTMLElement | null = null;
+
+/** Teardown callbacks for the open popup's dismiss listeners. */
+let miscDismissers: Array<() => void> = [];
+
+/**
+ * Close the '\u2026' popup (if open) and detach every dismiss listener.
+ * Idempotent, so it is safe to call from the view's dispose() as well.
+ *
+ * The Copy / Paste / Delete buttons are NOT destroyed: they simply leave the DOM
+ * with the panel and are re-appended the next time the popup opens, so the
+ * toolbar keeps owning exactly one instance of each and its disabled state
+ * stays correct.
+ */
+function closeMiscMenu(): void {
+  for (const off of miscDismissers) {
+    try {
+      off();
+    } catch {
+      // The listener was already removed; nothing to do.
+    }
+  }
+  miscDismissers = [];
+  if (miscMenuEl) {
+    miscMenuEl.remove();
+    miscMenuEl = null;
+  }
+}
+
+/**
+ * Open (or toggle shut) the '\u2026' popup holding the Copy, Paste and Delete
+ * buttons.
+ *
+ * The panel is a .files-ctxmenu (absolutely positioned against the card, see
+ * workingDir.css) laid out as a single horizontal row, anchored UNDER the '\u2026'
+ * button and right-aligned with it so it can never hang off the right edge. All
+ * three buttons are re-parented rather than recreated, which is what keeps
+ * updateActionButtons useful: it toggles the very elements shown here, so the
+ * popup always mirrors the current selection and clipboard availability for
+ * LOCAL and REMOTE listings alike. Delete is destructive, so it comes LAST in
+ * the group - furthest from the two harmless actions.
+ */
+function openMiscMenu(): void {
+  if (!cardEl || !miscButtonEl) return;
+
+  // Second click on the '\u2026' button toggles the popup shut.
+  if (miscMenuEl) {
+    closeMiscMenu();
+    return;
+  }
+
+  // Only one popup may be open at a time.
+  closeFileContextMenu();
+
+  const panel = document.createElement('div');
+  panel.className = 'files-ctxmenu';
+  panel.style.position = 'absolute';
+  panel.style.display = 'flex';
+  panel.style.flexDirection = 'row';
+  panel.style.alignItems = 'center';
+  // NO gap and no breathing room of its own: the buttons are meant to sit
+  // FLUSH side by side. .files-ctxmenu is authored for STACKED text items, so
+  // its padding and min-width would otherwise open a wide gulf between them;
+  // width: max-content shrinks the panel to exactly this small button group.
+  panel.style.gap = '0';
+  panel.style.padding = '2px';
+  panel.style.width = 'max-content';
+  panel.style.minWidth = '0';
+  panel.style.justifyContent = 'flex-start';
+
+  // appendChild MOVES the existing buttons into the panel: no duplicates, and
+  // every listener plus the .disabled flag set by updateActionButtons survives.
+  // The group holds Copy, Paste and Delete, the DESTRUCTIVE action LAST so it is
+  // the furthest from the two harmless ones. All three are the very elements the
+  // toolbar owns, which is what keeps updateActionButtons in charge: it decides
+  // when Copy needs a selection, when Paste has something to paste and when
+  // Delete is allowed. Delete keeps showing its own confirmation dialog - it is
+  // only its PLACEMENT that changed, never its behaviour.
+  if (actionButtons) {
+    for (const btn of [actionButtons.copyFile, actionButtons.paste, actionButtons.deleteEntry]) {
+      // Pin each button to its own icon-sized box: .files-refresh lets a button
+      // grow inside a flex row, which would spread the group apart instead of
+      // keeping it tight. Zero margin drops any per-button spacing as well.
+      btn.style.flex = '0 0 auto';
+      btn.style.margin = '0';
+      panel.appendChild(btn);
+    }
+  }
+
+  cardEl.appendChild(panel);
+  miscMenuEl = panel;
+
+  // Anchor the panel under the '\u2026' button, right-aligned and clamped inside
+  // the card. Coordinates are relative to the card because the panel is
+  // absolutely positioned against it.
+  const rect = cardEl.getBoundingClientRect();
+  const btnRect = miscButtonEl.getBoundingClientRect();
+  const panelW = panel.offsetWidth;
+  const panelH = panel.offsetHeight;
+  let left = btnRect.right - rect.left - panelW;
+  if (left + panelW > rect.width - 4) left = rect.width - panelW - 4;
+  if (left < 4) left = 4;
+  let top = btnRect.bottom - rect.top + 4;
+  if (top + panelH > rect.height - 4) top = Math.max(4, rect.height - panelH - 4);
+  panel.style.left = Math.round(left) + 'px';
+  panel.style.top = Math.round(top) + 'px';
+
+  // Using Copy or Paste closes the popup again, so the row returns to normal.
+  panel.addEventListener('click', () => closeMiscMenu());
+
+  // Dismiss on an outside click, Escape, a scroll of the listing, or when the
+  // window is resized or loses focus. Every listener is torn down on close.
+  miscDismissers.push(
+    onCtx(
+      document,
+      'mousedown',
+      (e: Event) => {
+        const target = e.target as Node | null;
+        // A click on the panel or on the '\u2026' button itself is not 'outside'
+        // (the button toggles the popup in its own click handler).
+        if (target && (panel.contains(target) || miscButtonEl?.contains(target))) return;
+        closeMiscMenu();
+      },
+      true
+    )
+  );
+  miscDismissers.push(
+    onCtx(
+      window,
+      'keydown',
+      (e: Event) => {
+        if ((e as KeyboardEvent).key === 'Escape') {
+          e.preventDefault();
+          closeMiscMenu();
+        }
+      },
+      true
+    )
+  );
+  miscDismissers.push(onCtx(document, 'scroll', () => closeMiscMenu(), true));
+  miscDismissers.push(onCtx(window, 'resize', () => closeMiscMenu(), false));
+  miscDismissers.push(onCtx(window, 'blur', () => closeMiscMenu(), false));
+}
+
 export function buildFilesView(ctx: RightTabContext): RightTabInstance {
   const root = document.createElement('div');
   root.className = 'files-card';
@@ -2218,16 +2692,22 @@ export function buildFilesView(ctx: RightTabContext): RightTabInstance {
   //
   // New File / New Folder create entries inside the directory currently shown.
   // There is no text box for them: the name is asked for in an inline modal,
-  // because window.prompt() does not exist in Electron. Copy File and Delete
-  // act on the SELECTED row, so they stay disabled until something is selected.
-  // All four reuse the .files-refresh class so they look exactly like Refresh,
+  // because window.prompt() does not exist in Electron. Rename still acts on the
+  // SELECTED row, so it stays disabled until something is selected, while Copy,
+  // Paste and Delete now live in the '…' (More actions) popup at the right end
+  // of the row. All of them reuse the .files-refresh class so they look exactly
+  // like Refresh,
   // and every one of them works for LOCAL and REMOTE listings alike: the
   // renderer only builds the path, main does the work (over the cached SSH
   // connection for ssh:// targets).
+  // `mount = false` builds the button WITHOUT adding it to the path row, so it
+  // can be mounted into the '\u2026' (More actions) popup instead. The button is
+  // otherwise identical: same class, same icon markup, same click handler.
   const makeActionButton = (
     iconPath: string,
     title: string,
-    onClick: () => void
+    onClick: () => void,
+    mount = true
   ): HTMLButtonElement => {
     const btn = document.createElement('button');
     btn.className = 'files-refresh';
@@ -2248,7 +2728,9 @@ export function buildFilesView(ctx: RightTabContext): RightTabInstance {
       iconPath +
       '</svg>';
     btn.addEventListener('click', () => onClick());
-    pathRow.appendChild(btn);
+    // A detached button (mount = false) is mounted by the caller into the
+    // '\u2026' (More actions) popup instead of the path row.
+    if (mount) pathRow.appendChild(btn);
     return btn;
   };
 
@@ -2269,43 +2751,95 @@ export function buildFilesView(ctx: RightTabContext): RightTabInstance {
     () => void createEntry('folder')
   );
 
+  // Copy lives in the '\u2026' (More actions) popup rather than on the path row,
+  // so mount = false keeps it detached; openMiscMenu() mounts the SAME element.
   const copyFileBtn = makeActionButton(
     // Two overlapping pages.
     '<path d="M5.7 1.6h4.1l2.5 2.5v7.3a1 1 0 0 1-1 1H5.7a1 1 0 0 1-1-1V2.6a1 1 0 0 1 1-1z"/>' +
       '<path d="M9.8 1.6v2.7h2.5"/>' +
       '<path d="M3.1 4.7v9.1a1 1 0 0 0 1 1h5.9"/>',
     'Copy the selected file or folder',
-    () => void copySelectedEntry()
+    () => void copySelectedEntry(),
+    // Lives in the '\u2026' (More actions) popup, not on the path row.
+    false
   );
 
-  // Paste sits immediately right of Copy. It creates a copy of what Copy last
-  // captured INSIDE the directory on screen, so the same pair of buttons works
-  // for every combination: within one folder, across folders, and between a
-  // local directory and a server (local -> remote and remote -> local). An
-  // existing entry is never overwritten; main stores the copy under the next
-  // free name. Disabled until something has been copied (updateActionButtons).
+  // Paste pairs with Copy inside the '\u2026' (More actions) popup at the right
+  // end of the path row, so it is created detached (mount = false) and mounted
+  // by openMiscMenu(). It creates a copy of what Copy last captured INSIDE the
+  // directory on screen, so the same pair of buttons works for every
+  // combination: within one folder, across folders, and between a local
+  // directory and a server (local -> remote and remote -> local). An existing
+  // entry is never overwritten; main stores the copy under the next free name.
+  // Disabled until something has been copied (updateActionButtons).
   const pasteBtn = makeActionButton(
     // A clipboard: the clip tab plus the board beneath it.
     '<path d="M6.1 1.6h3.8v2.2H6.1z"/>' +
       '<path d="M3.9 3.2H3.1a1 1 0 0 0-1 1v9.2a1 1 0 0 0 1 1h9.8a1 1 0 0 0 1-1V4.2a1 1 0 0 0-1-1h-.8"/>',
     'Paste the copied file or folder here',
-    () => void pasteClipboard()
+    () => void pasteClipboard(),
+    // Lives in the '\u2026' (More actions) popup, not on the path row.
+    false
   );
 
+  // Rename sits immediately right of Paste: it acts on the SELECTED entry and
+  // only changes its name inside the directory it already lives in, so the same
+  // button renames LOCAL and REMOTE entries (the copy/delete fallback covers
+  // ssh:// targets through the cached connection as well). Disabled until
+  // something is selected (updateActionButtons).
+  const renameBtn = makeActionButton(
+    // A pencil: the classic rename affordance.
+    '<path d="M10.6 2.2l3.2 3.2-8.1 8.1-3.9.7.7-3.9z"/>' +
+      '<path d="M9.2 3.6l3.2 3.2"/>',
+    'Rename the selected file or folder',
+    () => void renameSelectedEntry()
+  );
+
+  // Delete also lives in the '\u2026' (More actions) popup now, AFTER Copy and
+  // Paste, so the path row stops at Rename and the '\u2026' button. mount = false
+  // keeps it detached; openMiscMenu() mounts the SAME element, so its bin icon,
+  // its deleteSelectedEntry handler and the disabled state updateActionButtons
+  // gives it are all unchanged - including the confirmation prompt it shows.
   const deleteBtn = makeActionButton(
     // A bin with a lid.
     '<path d="M2.4 4.3h11.2"/>' +
       '<path d="M5.3 4.3V2.9a1 1 0 0 1 1-1h3.5a1 1 0 0 1 1 1v1.4"/>' +
       '<path d="M3.9 4.3l.7 9a1 1 0 0 0 1 1h4.9a1 1 0 0 0 1-1l.7-9"/>',
     'Delete the selected file or folder',
-    () => void deleteSelectedEntry()
+    () => void deleteSelectedEntry(),
+    // Lives in the '\u2026' (More actions) popup, not on the path row.
+    false
   );
+
+  // The More-actions button is the LAST item on the path row - nothing sits to
+  // its right. It opens a popup holding Copy, Paste and Delete, so those three
+  // no longer take space on the row itself. The button is always enabled: the
+  // popup's own buttons carry the enabled/disabled state (updateActionButtons
+  // keeps acting on those very elements, so the popup always reflects the
+  // selection).
+  //
+  // The icon is BUILT BY makeActionButton, exactly like the New File, New
+  // Folder, Copy, Rename and Delete icons, so it inherits the identical 18x18
+  // inline-SVG box and the same flex centring. A text glyph (the ellipsis
+  // character) rendered at the .files-refresh font-size sat noticeably smaller
+  // and rode lower than its neighbours, which is why it is drawn instead: three
+  // filled dots on the 16x16 viewBox, their radius matching the 1.4 stroke
+  // weight of the line icons, spaced evenly so the ellipsis reads as one glyph.
+  const miscBtn = makeActionButton(
+    '<circle cx="3.2" cy="8" r="1.35" fill="currentColor" stroke="none"/>' +
+      '<circle cx="8" cy="8" r="1.35" fill="currentColor" stroke="none"/>' +
+      '<circle cx="12.8" cy="8" r="1.35" fill="currentColor" stroke="none"/>',
+    'More actions: copy, paste and delete',
+    () => openMiscMenu()
+  );
+  miscButtonEl = miscBtn;
 
   actionButtons = {
     newFile: newFileBtn,
     newFolder: newFolderBtn,
     copyFile: copyFileBtn,
     paste: pasteBtn,
+    rename: renameBtn,
     deleteEntry: deleteBtn
   };
   // Nothing is selected and no directory is known yet: start disabled.
@@ -2337,13 +2871,72 @@ export function buildFilesView(ctx: RightTabContext): RightTabInstance {
   }
   void probeClipboardCount();
 
+  // ---- Ctrl/Cmd + C / V clipboard shortcuts ----
+  //
+  // Ctrl+C (or Cmd+C on macOS) copies the SELECTED entry through the very same
+  // path as the Copy button, so a LOCAL entry is published to the OPERATING
+  // SYSTEM clipboard (pasting into Explorer/Finder works) and a REMOTE entry is
+  // kept in memory. Ctrl+V pastes into the shown directory exactly like the
+  // Paste button, preferring the OS clipboard for local targets. The card is
+  // made focusable and takes focus on a click inside the listing, so the
+  // shortcuts only act on the Files tab while it holds focus. Editing text in
+  // the path box keeps the native copy/paste behaviour because a focused INPUT
+  // is never hijacked.
+  root.tabIndex = -1;
+  root.style.outline = 'none';
+
+  const focusCardOnMouseDown = (ev: MouseEvent): void => {
+    const target = ev.target as HTMLElement | null;
+    if (
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.tagName === 'BUTTON' ||
+        target.isContentEditable)
+    ) {
+      return;
+    }
+    root.focus();
+  };
+  const onCardKeydown = (ev: KeyboardEvent): void => {
+    if (!(ev.ctrlKey || ev.metaKey) || ev.altKey) return;
+    const target = ev.target as HTMLElement | null;
+    // Never hijack copy/paste while the user is editing text (path box, etc.).
+    if (
+      target &&
+      (target.tagName === 'INPUT' ||
+        target.tagName === 'TEXTAREA' ||
+        target.isContentEditable)
+    ) {
+      return;
+    }
+    const key = ev.key.toLowerCase();
+    if (key === 'c') {
+      if (!selectedEntry) return;
+      ev.preventDefault();
+      void copySelectedEntry();
+    } else if (key === 'v') {
+      ev.preventDefault();
+      void pasteClipboard();
+    }
+  };
+  root.addEventListener('mousedown', focusCardOnMouseDown, true);
+  root.addEventListener('keydown', onCardKeydown);
+
   return {
     el: root,
     refresh: () => void loadRoot(),
     dispose: () => {
+      // Detach the Ctrl+C/V listeners and the focus helper.
+      root.removeEventListener('mousedown', focusCardOnMouseDown, true);
+      root.removeEventListener('keydown', onCardKeydown);
       // Drop any open context menu and its dismiss listeners before teardown,
       // and forget the card element the menu was parented to.
       closeFileContextMenu();
+      // Close the '\u2026' (More actions) popup too and forget the button it was
+      // anchored to: the panel and its dismiss listeners must not outlive the tab.
+      closeMiscMenu();
+      miscButtonEl = null;
       cardEl = null;
 
       // Stop the background refresh loop and drop every tracked directory and

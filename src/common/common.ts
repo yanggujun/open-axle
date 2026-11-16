@@ -21,6 +21,7 @@ export class ExecutionResponse {
   format: string;
   mimeType: string;
   persist: boolean;
+  misc: Record<string, string>;
 
   constructor(content: string, prompt: string, sequential: boolean = false, print: boolean = false, format: string = '', mimeType: string = '', persist: boolean = false) {
     this.content = content;
@@ -30,6 +31,7 @@ export class ExecutionResponse {
     this.format = format;
     this.mimeType = mimeType;
     this.persist = persist;
+    this.misc = {};
   }
 
   /**
@@ -803,4 +805,78 @@ export type Runtime = {
 
 export function fenceCode(lang: string, code: string) {
   return `\`\`\`${lang}\n${code}\n\`\`\`\n`;
+}
+
+// ---------------------------------------------------------------------------
+// File-view classification (text vs image)
+// ---------------------------------------------------------------------------
+// Single source of truth for "can this file be shown, and in which viewer?".
+// The returned kind is what the Files tab uses to choose between the text
+// (Monaco) viewer and the image viewer, and it is also what the view-space
+// uses to refuse mounting anything it cannot render.
+//
+// IMPORTANT: this module imports fs/ssh2, so RENDERER code cannot import it.
+// src/viewSpace.ts therefore mirrors the extension tables locally; keep the
+// two in step when a new extension becomes viewable.
+
+/** Which viewer a file belongs to, or '' when neither can render it. */
+export type FileViewKind = 'text' | 'image' | '';
+
+/**
+ * True when the extension names a raster image in IMAGE_EXTENSION_MIME_MAP.
+ *
+ * SVG deliberately answers FALSE: it is XML markup and lives in
+ * TEXT_EXTENSION_MIME_MAP, so {@link readFile} returns its source text. The
+ * main process still previews it as a picture by whitelisting '.svg' in
+ * axle:readImageFile (see IMAGE_VIEW_EXTRA_EXTENSIONS in main.ts). Use this
+ * helper to ask 'is this a raster bitmap?', never 'can this be viewed as a
+ * picture?' - SVG is both markup and a picture.
+ */
+export function isImageFile(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  return Boolean(IMAGE_EXTENSION_MIME_MAP[ext]);
+}
+
+/**
+ * True when the extension is a known text/code/structured-text format.
+ *
+ * SVG counts as TEXT on purpose: it is an XML document, and readFile() returns
+ * its markup instead of a base64 payload, so it opens in the text viewer.
+ */
+export function isKnownTextExtension(filePath: string): boolean {
+  const ext = path.extname(filePath).toLowerCase();
+  if (!ext) return false;
+  return Boolean(
+    CODE_EXTENSION_LANGUAGE_MAP[ext] ||
+    TEXT_EXTENSION_MIME_MAP[ext] ||
+    PURE_TEXT_EXTENSION_MIME_MAP[ext]
+  );
+}
+
+/**
+ * Decides whether a file can be shown in the TEXT viewer.
+ *
+ * The order mirrors {@link readFile} so the verdict and the reader always
+ * agree:
+ *   1. image extension             -> false (the image viewer handles it);
+ *   2. known text/code extension   -> true;
+ *   3. unknown/absent extension    -> sniff the leading bytes, exactly like
+ *      the read path, so a text file with an unusual extension still opens.
+ * A missing or unreadable file sniffs as false.
+ */
+export function isTextFile(filePath: string): boolean {
+  if (isImageFile(filePath)) return false;
+  if (isKnownTextExtension(filePath)) return true;
+  return isProbablyTextFile(filePath);
+}
+
+/**
+ * Classifies a file for a viewer: 'image', 'text', or '' when neither viewer
+ * can render it. Callers use the empty verdict to keep their previous
+ * behaviour (or to block the action) instead of opening an empty tab.
+ */
+export function fileViewKind(filePath: string): FileViewKind {
+  if (isImageFile(filePath)) return 'image';
+  if (isTextFile(filePath)) return 'text';
+  return '';
 }

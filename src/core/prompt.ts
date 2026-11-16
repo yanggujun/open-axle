@@ -130,9 +130,9 @@ export class AxlePrompt {
   }
 
   private async _detectRemoteOsPrompt(
-    workingDir: { serverName: string; path: string; server: Record<string, string> | null }
+    workingDir: WorkingDir
   ): Promise<string> {
-    const serverName = workingDir.serverName;
+    const serverName = workingDir.serverName ?? '';
     const server = workingDir.server;
     if (!server) {
       logger.log(`No SSH server configuration found for '${serverName}'.`);
@@ -198,9 +198,9 @@ export class AxlePrompt {
   }
 
   /**
-   * Load all Markdown prompt files found in the `.axle` folder of the given
-   * working directory into `projectPrompts`. Mirrors `buildOsPrompt`: it works
-   * for both local and remote (SSH) working directories.
+   * Load all Markdown prompt files found in the `.axle/skills` folder of the
+   * given working directory into `projectPrompts`. Mirrors `buildOsPrompt`: it
+   * works for both local and remote (SSH) working directories.
    */
   async buildDirPrompt(workingDir: WorkingDir): Promise<void> {
     this.local.projectPrompts = [];
@@ -208,7 +208,9 @@ export class AxlePrompt {
     try {
       if (!workingDir || workingDir.kind === 'local') {
         const baseDir = workingDir && workingDir.path ? workingDir.path : process.cwd();
-        this.local.projectPrompts = this._readLocalProjectPrompts(path.join(baseDir, '.axle'));
+        this.local.projectPrompts = this._readLocalProjectPrompts(
+          path.join(baseDir, '.axle', 'skills')
+        );
       } else {
         this.local.projectPrompts = await this._readRemoteProjectPrompts(workingDir);
       }
@@ -221,7 +223,7 @@ export class AxlePrompt {
   }
 
   /**
-   * Read `*.md` files from a local `.axle` directory.
+   * Read `*.md` files from a local `.axle/skills` directory.
    */
   private _readLocalProjectPrompts(axleDir: string): Array<{ name: string; content: string }> {
     const prompts: Array<{ name: string; content: string }> = [];
@@ -251,14 +253,14 @@ export class AxlePrompt {
   }
 
   /**
-   * Read `*.md` files from the `.axle` directory of a remote working directory
-   * over SSH, reusing the shared connection helpers.
+   * Read `*.md` files from the `.axle/skills` directory of a remote working
+   * directory over SSH, reusing the shared connection helpers.
    */
   private async _readRemoteProjectPrompts(
-    workingDir: { serverName: string; path: string; server: Record<string, string> | null }
+    workingDir: WorkingDir
   ): Promise<Array<{ name: string; content: string }>> {
     const prompts: Array<{ name: string; content: string }> = [];
-    const serverName = workingDir.serverName;
+    const serverName = workingDir.serverName ?? '';
     const server = workingDir.server;
 
     if (!server) {
@@ -267,7 +269,7 @@ export class AxlePrompt {
     }
 
     const baseDir = (workingDir.path || '.').replace(/\/+$/, '');
-    const axleDir = `${baseDir}/.axle`;
+    const axleDir = `${baseDir}/.axle/skills`;
     const delimiter = '<<<AXLE_PROJECT_PROMPT>>>';
 
     try {

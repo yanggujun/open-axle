@@ -1,0 +1,234 @@
+/* ---------------------------------------------------------------------------
+ * diffView.css - styles for the side-by-side chat-log diff (src/diffView.ts).
+ *
+ * Side-by-side rendering of a change_file result: the ORIGINAL file text is
+ * shown on the LEFT and the NEW text on the RIGHT. Differing lines get a red
+ * (left) / green (right) tint and the differing words inside them are
+ * highlighted more strongly.
+ *
+ * These rules used to live in src/styles.css; they moved here so the diff view
+ * owns its own presentation. The import sits at the top of src/diffView.ts.
+ *
+ * ONLY the change itself is rendered: src/diffView.ts keeps 10 context lines
+ * above the first change and 10 below the last one, and marks whatever it
+ * omitted with .diff-elision.
+ * ------------------------------------------------------------------------- */
+
+/* A diff message may use the full width of the chat log. */
+.message.diff {
+  max-width: 100%;
+}
+
+/*
+ * The edited file's path, shown ONCE above the grid (misc.path from the
+ * change_file skill). It shares the grid's width so the label sits flush with
+ * the box it describes, and stays on one line: a long path is ellipsised here
+ * and its full value stays available as the element's tooltip.
+ */
+.diff-path {
+  width: 100%;
+  max-width: 100%;
+  margin: 8px 0 0;
+  padding: 2px 6px;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+  color: #3c9dc3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+/*
+ * The inner window: the bordered, scrolling box that holds the two panes.
+ *
+ * It fills the WHOLE chat log column, so the two panes split whatever width the
+ * message itself has instead of being capped at a share of it. Long code lines
+ * wrap inside their pane (see .diff-line) rather than stretching the grid past
+ * the column, and the box keeps its own scrollbars for tall content.
+ *
+ * The font is INHERITED on purpose: the diff reads like the rest of the chat
+ * log instead of switching to a monospace face of its own.
+ */
+.diff-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  column-gap: 8px;
+  width: 100%;
+  max-width: 100%;
+  margin: 8px 0 4px;
+  border: 1px solid #3a3a3a;
+  border-radius: 6px;
+  background-color: #111111;
+  /*
+   * 2/3 of the WINDOW height, not a fixed pixel budget: the diff window grows
+   * with the screen instead of stopping at 420px, and `overflow: auto` adds a
+   * scrollbar only once the content is taller than that share. vh is used
+   * rather than % because a percentage max-height needs a definite parent
+   * height, which the message body does not have.
+   */
+  max-height: 66.6667vh;
+  overflow: auto;
+  overscroll-behavior: contain;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: 1.45;
+}
+
+.diff-header {
+  position: sticky;
+  top: 0;
+  z-index: 3;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #9aa4b2;
+  background-color: #1f1f1f;
+  border-bottom: 1px solid #3a3a3a;
+}
+
+.diff-header.diff-origin {
+  background-color: #3a1d1d;
+  color: #ffb4b0;
+}
+
+.diff-header.diff-new {
+  background-color: #16301f;
+  color: #a5e8b5;
+}
+
+.diff-line {
+  display: flex;
+  align-items: flex-start;
+  padding: 0 6px;
+  min-height: 1.45em;
+  color: #d4d4d4;
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.diff-line.diff-origin {
+  border-right: 1px solid rgba(255, 255, 255, 0.05);
+}
+
+/* Whole-line change tints. */
+.diff-line-removed {
+  background-color: rgba(198, 40, 40, 0.22);
+}
+
+.diff-line-added {
+  background-color: rgba(46, 125, 50, 0.22);
+}
+
+/* Word/token level highlights inside a changed line. */
+.diff-token-removed {
+  background-color: rgba(198, 40, 40, 0.55);
+  color: #ffe1e0;
+  border-radius: 2px;
+}
+
+.diff-token-added {
+  background-color: rgba(46, 125, 50, 0.55);
+  color: #e4ffe9;
+  border-radius: 2px;
+}
+
+/*
+ * Line numbers.
+ *
+ * The width is driven by the CONTENT (flex: 0 0 auto) rather than a fixed 34px
+ * budget: a whole-file diff routinely reaches four and five digit numbers, and
+ * a fixed width made them wrap ('263' + an orphan '5' on a second line), which
+ * inserted a bogus extra row and pushed every following cell out of alignment.
+ * `white-space: nowrap` forbids that wrap outright, `min-width` keeps short
+ * numbers from collapsing the column, and tabular figures hold the column width
+ * steady as the digits grow down the listing.
+ */
+.diff-gutter {
+  flex: 0 0 auto;
+  min-width: 5ch;
+  padding-right: 6px;
+  text-align: right;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+  color: #8b949e;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+.diff-text {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Placeholder cell that keeps a one-sided change row-aligned. */
+.diff-empty {
+  background-image: repeating-linear-gradient(
+    45deg,
+    #161616,
+    #161616 6px,
+    #1b1b1b 6px,
+    #1b1b1b 12px
+  );
+}
+
+/*
+ * Collapsed context: one row spanning BOTH columns, shown where the view
+ * skipped unchanged lines above or below the rendered window.
+ */
+.diff-elision {
+  grid-column: 1 / -1;
+  padding: 2px 8px;
+  text-align: center;
+  font-size: 10px;
+  font-style: italic;
+  letter-spacing: 0.02em;
+  color: #8b949e;
+  background-color: #171717;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+}
+
+.diff-summary {
+  padding: 4px 2px 0;
+  font-family: inherit;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.diff-stat-removed {
+  color: #ff8a80;
+}
+
+.diff-stat-added {
+  color: #9ae6a8;
+}
+
+/* Narrow windows: stack the two panes so both texts stay readable. */
+@media (max-width: 720px) {
+  .diff-grid {
+    grid-template-columns: 1fr;
+    column-gap: 0;
+    /* A stacked diff needs the whole column to stay usable. */
+    width: 100%;
+    max-width: 100%;
+    /*
+     * Keep the same 2/3-of-the-window cap: a stacked diff is twice as tall, so
+     * dropping the limit here would let one change push the rest of the chat
+     * log off screen instead of scrolling inside its own window.
+     */
+    max-height: 66.6667vh;
+  }
+
+  /* The label must follow its box, or it would stop sitting flush with it. */
+  .diff-path {
+    width: 100%;
+    max-width: 100%;
+  }
+}

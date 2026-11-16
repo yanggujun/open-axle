@@ -642,6 +642,8 @@
   flex-direction: column;
   width: 50vw;
   height: 55vh;
+  /* Positioning context for the .file-editor-resize grip. */
+  position: relative;
   min-width: 520px;
   min-height: 320px;
   background-color: #252526;
@@ -652,6 +654,21 @@
   overflow: hidden;
   font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
   font-size: 14px;
+}
+
+/* Maximized state: pin the dialog to the work area. Width/height stay auto so
+   inset does the stretching. src/fileEditor.ts toggles this class from the
+   header's maximize button; Monaco re-lays out on its own because the editor
+   is created with automaticLayout: true. */
+.file-editor.maximized {
+  position: fixed;
+  inset: 8px;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+  box-shadow: none;
 }
 
 .file-editor-header {
@@ -707,6 +724,36 @@
   cursor: default;
 }
 
+/* Maximize / restore toggle in the header, left of the close button. Same
+   28x28 hit area as the close button but a neutral hover: closing discards
+   the dialog, maximizing merely pins it to the work area. Matches
+   .image-viewer-max so both dialogs share one header idiom. */
+.file-editor-max {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #888;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.file-editor-max:hover {
+  color: #fff;
+  background-color: #3a3a3d;
+}
+
+.file-editor-max:focus-visible {
+  outline: 2px solid #4fc3f7;
+  outline-offset: 1px;
+}
+
 /* Full path of the file being edited. */
 .file-editor-path {
   flex: 0 0 auto;
@@ -738,6 +785,37 @@
   padding: 10px 14px;
   background-color: #2d2d30;
   border-top: 1px solid #444;
+}
+
+/* Mouse-drag resize corner. src/fileEditor.ts adds this element as the last
+   child of the dialog and drives the gesture itself; the styling mirrors the
+   image viewer's grip (.image-viewer-resize) and the logs-window grip in
+   src/styles.css, so every resize affordance in the app looks like the same
+   control. It sits on top of the footer corner (z-index) and is absolutely
+   positioned, so it never takes part in the dialog's flex column. */
+.file-editor-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  z-index: 1;
+  cursor: nwse-resize;
+  /* Two thin diagonals: the classic bottom-right resize corner. */
+  background-image: linear-gradient(
+      135deg,
+      transparent 0 55%,
+      #555 55% 62%,
+      transparent 62% 72%,
+      #888 72% 79%,
+      transparent 79%
+    );
+}
+
+/* A maximized dialog is pinned to the work area by the stylesheet, so a
+   dragged size does not apply there; hide the affordance to say so. */
+.file-editor.maximized .file-editor-resize {
+  display: none;
 }
 
 /* Saving / saved / error note on the left of the footer. */
@@ -819,6 +897,8 @@
   height: 55vh;
   min-width: 420px;
   min-height: 300px;
+  /* Positioning context for the .image-viewer-resize grip. */
+  position: relative;
   background-color: #252526;
   color: #e0e0e0;
   border: 1px solid #444;
@@ -869,6 +949,49 @@
   background-color: #c62828;
 }
 
+/* Maximize / restore toggle in the header, left of the close button. Same
+   28x28 hit area as the close button but a neutral hover: closing is
+   destructive, resizing is not. */
+.image-viewer-max {
+  flex: 0 0 auto;
+  width: 28px;
+  height: 28px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  background: none;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  color: #888;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.image-viewer-max:hover {
+  color: #fff;
+  background-color: #3a3a3d;
+}
+
+.image-viewer-max:focus-visible {
+  outline: 2px solid #4fc3f7;
+  outline-offset: 1px;
+}
+
+/* Maximized state: pin the dialog to the work area. Width/height stay auto so
+   inset does the stretching; src/imageViewer.ts clears its inline size in this
+   mode and re-runs the fit logic against the larger box. */
+.image-viewer.maximized {
+  position: fixed;
+  inset: 8px;
+  width: auto;
+  height: auto;
+  max-width: none;
+  max-height: none;
+  border-radius: 0;
+  box-shadow: none;
+}
+
 /* Full path of the image being previewed. */
 .image-viewer-path {
   flex: 0 0 auto;
@@ -883,8 +1006,12 @@
   text-overflow: ellipsis;
 }
 
-/* The image is centred and scaled down to fit, never blown up past its
-   natural size (max-width/max-height alone do not upscale either). */
+/* The dialog is sized from the image by src/imageViewer.ts: a picture that
+   fits the screen opens at 1:1, a larger one is scaled down proportionally
+   (never up). layout() writes explicit pixel width/height plus inline
+   max-width/max-height: none to override the defaults below; those defaults
+   still apply in the fallback path where the image reports no intrinsic size.
+   The header's maximize button pins the dialog to the work area instead. */
 .image-viewer-surface {
   flex: 1 1 auto;
   min-height: 0;
@@ -913,6 +1040,37 @@
   border-top: 1px solid #444;
 }
 
+/* Mouse-drag resize corner. src/imageViewer.ts adds this element as the last
+   child of the dialog and drives the gesture itself; the styling mirrors the
+   logs-window grip in src/styles.css (a subtle light diagonal) so the two
+   resize affordances look like the same control. It sits on top of the footer
+   corner (z-index) and is absolutely positioned, so it never takes part in the
+   dialog's flex column. */
+.image-viewer-resize {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  width: 16px;
+  height: 16px;
+  z-index: 1;
+  cursor: nwse-resize;
+  /* Two thin diagonals: the classic bottom-right resize corner. */
+  background-image: linear-gradient(
+      135deg,
+      transparent 0 55%,
+      #555 55% 62%,
+      transparent 62% 72%,
+      #888 72% 79%,
+      transparent 79%
+    );
+}
+
+/* A maximized dialog is pinned to the work area by the stylesheet, so a
+   dragged size does not apply there; hide the affordance to say so. */
+.image-viewer.maximized .image-viewer-resize {
+  display: none;
+}
+
 /* Decode-failure note on the left of the footer. */
 .image-viewer-status {
   flex: 1 1 auto;
@@ -934,4 +1092,661 @@
   font-family: 'Consolas', 'Courier New', monospace;
   font-size: 12px;
   color: #6f6f6f;
+}
+
+/* ==========================================================================
+   VIEW SPACE (#view-space) - the tabbed area between the model chat and the
+   right dock, plus the EMBEDDED variants of the two viewers it hosts.
+
+   Layout contract:
+     .view-space               flex item, hidden until a file is requested
+     .view-space-resizer       LEFT edge grip, horizontal drag only
+     .view-space-inner         header row + panel host
+     .view-space-panels        position:relative; children stack at inset:0
+     .view-space-panel         absolutely positioned; only the active one
+                               is display:block (set by src/viewSpace.ts)
+
+   The embedded overrides at the bottom neutralise the floating-dialog
+   geometry of .file-editor / .image-viewer so the SAME modules fill a panel.
+   ========================================================================== */
+
+/* DEFAULT WIDTH: 45% of #main, so the first paint already matches the reveal
+   this module performs (DEFAULT_WIDTH_FRACTION in src/viewSpace.ts) and the
+   three-way split paints as 30% chat / 45% view space / 25% dock: the dock
+   owns a fixed 25% width, this area claims 45%, and the left column is the
+   flex filler that absorbs the remaining 30%. Dragging the left-edge grip
+   overwrites the width with a clamped px value, exactly like the dock grip
+   overwrites --right-width. min-width / max-width are the same rails the JS
+   clamp uses, so a narrow window cannot collapse either neighbour. */
+.view-space {
+  display: flex;
+  flex-direction: row;
+  align-items: stretch;
+  position: relative;
+  flex: 0 0 auto;
+  width: 45%;
+  min-width: 320px;
+  max-width: 80vw;
+  height: 100%;
+  min-height: 0;
+  background: var(--panel-bg, #1e1e1e);
+  border-left: 1px solid var(--border-color, #2b2b2b);
+  border-right: 1px solid var(--border-color, #2b2b2b);
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+/* Hidden by default: the area only appears once a file is requested. */
+.view-space.hidden {
+  display: none !important;
+}
+
+.view-space-inner {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* ---- Left-edge horizontal resizer ----
+   Mirrors `.right-workspace-resizer` in src/styles.css so both grips look and
+   behave identically: transparent at rest, the same cyan #4fc3f7 on hover /
+   active, the same 4px width, the same ew-resize cursor and the same
+   background-color transition.
+
+   POSITION: ABSOLUTE, exactly like the dock grip. As an in-flow `flex: 0 0
+   auto` child it consumed 4px of the row BEFORE .view-space-inner, pushing the
+   tab bar (and the panels) 4px right of where the neighbouring bars start and
+   stealing width from the content. Anchored to .view-space's left edge
+   (position:relative) it overlaps the chrome instead of displacing it, so the
+   header's first tab sits at the same border+padding inset as the dock's.
+   The grip covers the full height (height:100%) and sits above the header
+   (z-index:10), but the header's 8px left padding keeps every tab and button
+   clear of its 4px hit area. src/viewSpace.ts finds it with
+   root.querySelector('.view-space-resizer') and its drag math reads the root's
+   bounding rect, so neither depends on the grip being in flow. */
+.view-space-resizer {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 4px;
+  height: 100%;
+  z-index: 10;
+  cursor: ew-resize;
+  background-color: transparent;
+  transition: background-color 0.12s ease;
+}
+
+.view-space-resizer:hover,
+.view-space-resizer:active {
+  background-color: #4fc3f7;
+}
+
+/* ---- Header: tab strip + action buttons ---- */
+/* Header row: a LITERAL copy of the shared top-bar metrics.
+
+   In src/styles.css, #tab-bar and .right-dock-header are deliberately
+   identical - `padding: 6px 8px 0 8px`, `background-color: #252526`,
+   `border-bottom: 1px solid #444`, `gap: 2px` and NO height, so their height is
+   CONTENT-driven by the tabs inside them (.tab-button uses `padding: 8px 4px`
+   plus a 1px top border). .right-dock-header additionally uses
+   `align-items: flex-end` so its tabs sit on the bottom edge, flush with the
+   bottom border.
+
+   This rule previously invented its own geometry - a fixed `height: 34px`,
+   `padding: 0 4px 0 0`, `align-items: center` and a #2b2b2b border - which is
+   exactly why the bar did not line up with the other two columns. It now
+   declares only the values the neighbours share and no height at all, so all
+   three bars compute the same height from the same numbers. */
+.view-space-header {
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 2px;
+  flex: 0 0 auto;
+  padding: 6px 8px 0 8px;
+  background-color: #252526;
+  border-bottom: 1px solid #444;
+  min-width: 0;
+  overflow: hidden;
+}
+
+/* ---- Clear the collapsed dock's extend button ----
+   While #right-workspace is COLLAPSED it takes zero width, so this area's
+   right edge IS the window's right edge. The dock's extend button
+   (.right-expand in src/styles.css) is `position: fixed` at `top: 6px;
+   right: 6px` and is 28px wide, so it occupies the 6px-34px band measured
+   from that edge - exactly where this header's last child, the view-space
+   close button, used to sit. The two controls therefore painted on top of
+   each other and the close button's right half was not clickable.
+
+   Reserving 40px of right padding moves the header's content (and with it the
+   close button) clear of that band: the button now ends 40px from the edge,
+   leaving 6px of daylight before the extend button's left side at 34px. The
+   padding applies ONLY while the dock is collapsed - an expanded dock owns
+   that region itself and no floating button is drawn there - so the header's
+   normal 8px gutter is untouched in every other state. `:has()` is a sibling
+   test because the collapsed class lives on #right-workspace (the next sibling
+   of #view-space in src/index.html), not on an ancestor of this bar. */
+#view-space:has(~ #right-workspace.collapsed) .view-space-header {
+  padding-right: 40px;
+}
+
+/* Tab strip: mirrors `.right-dock-header > .right-tabs` in src/styles.css -
+   `align-items: flex-end` so the tabs sit ON the bar's bottom border, and NO
+   height, so the strip is sized by its tabs and never stretches them.
+
+   NO scrollbar overrides: the strip shares the GLOBAL themed scrollbar from
+   src/styles.css (12px, `scrollbar-width: thin`), exactly like #tab-bar and
+   .right-tabs. The private 4px-tall scrollbar this rule used to declare made
+   this bar 8px shorter than its neighbours whenever the tabs overflowed,
+   because a horizontal scrollbar adds its height INSIDE the strip and thus to
+   the bar that contains it. */
+.view-space-tabs {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: row;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+/* Tab: the SAME vertical metrics as `.tab-button` / `.right-tab` in
+   src/styles.css (`padding: 8px 4px`, `border: 1px solid #444` with
+   `border-bottom: none`, `border-radius: 6px 6px 0 0`, `font-size: 14px`), so
+   its computed height is identical to a model tab and therefore so is the
+   height of the bar that contains it. `margin: 0` is deliberate: the 4px
+   margin this rule used to carry added height the neighbours did not have.
+   The LINE-HEIGHT stays INHERITED (normal), exactly like the other two tab
+   families: the label's normal line box at 14px is what sets the tab height.
+   The `line-height: 1` this rule used to declare shrank that box to 14px,
+   making this tab ~3px shorter than its neighbours and dropping this bar's
+   bottom border ~3px above theirs - the reported misalignment. */
+.view-space-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex: 0 0 auto;
+  max-width: 220px;
+  padding: 8px 4px 8px 4px;
+  margin: 0;
+  font: inherit;
+  font-size: 14px;
+  white-space: nowrap;
+  color: #ccc;
+  background-color: #2d2d30;
+  border: 1px solid #444;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.view-space-tab:hover {
+  background-color: #3a3a3d;
+}
+
+.view-space-tab.active {
+  background-color: #1a1a1a;
+  color: #4fc3f7;
+  border-color: #4fc3f7;
+  font-weight: bold;
+}
+
+.view-space-tab-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Unsaved-changes marker on a tab.
+   An EMBEDDED editor renders no title bar (see src/fileEditor.ts), so the dot
+   that normally sits in that header is painted here instead: the editor reports
+   the buffer state through onDirtyChange and src/viewSpace.ts toggles the
+   `dirty` class on the tab button. \2022 is the bullet character. */
+.view-space-tab.dirty .view-space-tab-label::before {
+  content: '\2022';
+  display: inline-block;
+  margin-right: 4px;
+  color: var(--accent, #0a84ff);
+  font-size: 14px;
+  line-height: 1;
+  vertical-align: middle;
+}
+
+.view-space-tab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  font-size: 12px;
+  line-height: 1;
+  opacity: 0.6;
+}
+
+.view-space-tab-close:hover {
+  opacity: 1;
+  background: var(--tab-close-hover-bg, #4a4a4a);
+}
+
+/* Header action buttons (one-shot modal action + close).
+
+   The header uses `align-items: flex-end`, so these 22px buttons keep their own
+   height instead of stretching the bar - the tabs stay the tallest child and
+   therefore still decide the bar's height. The small bottom margin centres them
+   against the tab text: with the inherited normal line-height a tab is ~34px
+   tall (8px padding above and below the 14px label's normal line box plus its
+   1px top border), and (34 - 22) / 2 is 6px.
+
+   The right gutter needs no extra rule: .view-space-header now carries the
+   shared `padding: 6px 8px 0 8px`, so these buttons end 8px from the edge just
+   like the model and dock tab bars in src/styles.css. */
+.view-space-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 0 auto;
+  align-self: flex-end;
+  margin-bottom: 6px;
+}
+
+.view-space-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font: inherit;
+  color: var(--btn-fg, #c8c8c8);
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+}
+
+.view-space-btn:hover {
+  color: var(--btn-fg-hover, #ffffff);
+  background: var(--btn-hover-bg, #3a3a3a);
+}
+
+.view-space-btn:focus-visible {
+  outline: 1px solid var(--accent, #0a84ff);
+  outline-offset: 1px;
+}
+
+/* The modal action sits immediately LEFT of the close button and is a ONE-SHOT
+   command (open the active file in a floating dialog), NOT a toggle. It carries
+   no aria-pressed state, so there is deliberately NO pressed/active rule here:
+   the button keeps the same rest look before, between and after any number of
+   clicks and reacts only to :hover / :focus-visible through .view-space-btn
+   above, exactly like the close button beside it. */
+
+.view-space-close {
+  font-size: 15px;
+  line-height: 1;
+}
+
+/* ---- File path box ----
+   The path box in this header is the SHARED searchable control built by
+   buildPathBox() in src/pathBox.ts, styled by the .path-box family further down
+   this file. It is the same box the code editor and the image preview mount, so
+   its read-only line, its in-box magnifier and its "toggle to search, toggle
+   back to the plain path" behaviour are defined ONCE and are not restated here.
+   The rules that used to live at this spot (.view-space-path, -text, -input,
+   -toggle, -results, -result, -hint and their .hidden companions) were deleted
+   with the static markup they targeted; only the header's own layout rules
+   (.view-space-actions / .view-space-btn below) remain, because the modal and
+   close buttons still use them. */
+
+/* ---- Panel host ---- */
+.view-space-panels {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: var(--panel-body-bg, #1e1e1e);
+}
+
+.view-space-panel {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+}
+
+/* ==========================================================================
+   EMBEDDED VIEWERS
+
+   src/fileEditor.ts and src/imageViewer.ts mount with embedded:true and put
+   their box inside a .view-space-panel. These rules strip the floating-window
+   presentation (centring, max sizes, shadow, rounding, minimums) and make the
+   box fill the panel; the comment blocks in the two modules document that the
+   embedded path skips the backdrop, Escape handling and the resize grip.
+   ========================================================================== */
+
+/* No dimming backdrop: the wrapper is just a full-panel block. */
+.file-editor-embed,
+.image-viewer-embed {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  overflow: hidden;
+  background: transparent;
+}
+
+/* Neutralise the dialog geometry for both viewers. */
+.file-editor.file-editor-inline,
+.image-viewer.image-viewer-inline {
+  position: relative;
+  inset: auto;
+  flex: 1 1 auto;
+  width: auto;
+  height: auto;
+  min-width: 0;
+  min-height: 0;
+  max-width: none;
+  max-height: none;
+  margin: 0;
+  border: none;
+  border-radius: 0;
+  box-shadow: none;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Both modules keep their header/path/footer rows; only the middle grows. */
+.file-editor-inline .file-editor-surface {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.image-viewer-inline .image-viewer-surface {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  /* NOT auto: this box is observed by the embedded ResizeObserver in
+     src/imageViewer.ts. A scrollbar that appears and disappears changes the
+     content box by its own thickness, which re-notifies the observer, whose
+     re-fit can toggle it again - a feedback channel straight into the
+     'ResizeObserver loop completed with undelivered notifications' warning.
+     Nothing legitimately needs scrolling here anyway: the embedded picture is
+     fitted to the box, never left overflowing. */
+  overflow: hidden;
+}
+
+/* The keyboard belongs to the surrounding window, so the inline editor must
+   not paint a focus ring around the whole panel. */
+.file-editor-inline:focus,
+.file-editor-inline:focus-within,
+.image-viewer-inline:focus,
+.image-viewer-inline:focus-within {
+  outline: none;
+}
+
+/* NOTE: the embedded path line used to be overridden here so it matched the
+   Files tab's path box. Both viewers now mount the shared .path-box control
+   (src/pathBox.ts), whose `.path-box-inline` modifier already reproduces that
+   geometry - the same 5px inset from the panel edge, the same Consolas 12px
+   metrics and the same 1px #444 border - so no per-viewer override is needed
+   and `.file-editor-path` / `.image-viewer-path` no longer exist in the DOM. */
+
+
+/* ==========================================================================
+   SHARED SEARCHABLE PATH BOX (.path-box)
+
+   ONE control, THREE surfaces. src/pathBox.ts builds this markup and these are
+   the only rules that draw it:
+
+     view space header      #view-space  .view-space-header   (active tab file)
+     code editor path line  src/fileEditor.ts   floating + embedded
+     image path line        src/imageViewer.ts  floating + embedded
+
+   Before this block each surface had its own path markup and its own colours,
+   so the same information looked different depending on where it was shown and
+   only the view space could search. Now every instance is the same box:
+
+     .path-box            the bordered, rounded control (a flex ROW)
+     .path-box-text       READ-ONLY line: the file path, ellipsised
+     .path-box-input      the SAME line as an editable search field
+     .path-box-toggle     the magnifier, pinned INSIDE the box on the RIGHT
+     .path-box-results    matches dropdown, anchored under the box
+
+   The two host modifiers only set geometry, never colour or typography, so a
+   box in the header and a box in a panel are the same control at different
+   sizes:
+
+     .path-box-header     used in the view-space tab bar (bottom-aligned row)
+     .path-box-inline     used inside an editor / preview panel body
+
+   Colour values are the app's existing dark palette: #1e1e1e body, #444
+   borders, #4fc3f7 accent - identical to .files-card-path, so the searchable
+   control reads like every other input in the window.
+   ========================================================================== */
+
+/* The control itself. `.path-box` IS the bordered box, so the toggle can sit
+   inside it on the right while the text/input grows to fill the rest; that is
+   what "the search button is inside the path box" means structurally. */
+.path-box {
+  position: relative;
+  display: flex;
+  flex-direction: row;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
+  min-width: 0;
+  height: 26px;
+  padding: 0 2px 0 8px;
+  background-color: #1e1e1e;
+  border: 1px solid #444;
+  border-radius: 6px;
+  font-family: 'Consolas', 'Courier New', monospace;
+  font-size: 12px;
+  line-height: 1;
+}
+
+/* Host modifier: inside a panel body (editor / preview). Full width of the
+   panel, with the row inset matching the Files tab's path row (1px card border
+   + 4px body padding = 5px), and no bottom margin so the surface below it can
+   sit flush. */
+.path-box.path-box-inline {
+  flex: 0 0 auto;
+  margin: 5px 5px 0 5px;
+  width: auto;
+  max-width: none;
+}
+
+/* Host modifier: in the view-space tab bar. The header is
+   `align-items: flex-end`, so the box aligns itself to the bottom edge and
+   carries the same 6px bottom margin as the 22px action buttons beside it;
+   max-width keeps a very long path from eating the whole tab strip. */
+.path-box.path-box-header {
+  flex: 0 1 auto;
+  align-self: flex-end;
+  max-width: 340px;
+  margin-bottom: 6px;
+}
+
+/* READ-ONLY line: one ellipsised row of the file path. It is not editable, so
+   the caret never appears and the text stays selectable for copying. */
+.path-box-text {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0 2px;
+  color: #e0e0e0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  user-select: text;
+}
+
+/* SEARCH FIELD: the same metrics as the read-only line, so toggling never makes
+   the box (or the bar that contains it) jump by a pixel. `font: inherit` keeps
+   the Consolas 12px of .path-box instead of falling back to the UI font. */
+.path-box-input {
+  display: block;
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 100%;
+  padding: 0 2px;
+  font: inherit;
+  font-size: 12px;
+  color: #e0e0e0;
+  background: transparent;
+  border: none;
+  outline: none;
+}
+
+.path-box-input::placeholder {
+  color: #808080;
+}
+
+/* The magnifier: INSIDE the box, pinned to its right edge by being the last
+   flex item. A fixed 22px square so it cannot stretch the box taller, with the
+   app's accent hover and a latched `.active` look while the box is searching. */
+.path-box-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  font: inherit;
+  color: #c8c8c8;
+  background: transparent;
+  border: none;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.path-box-toggle:hover {
+  color: #ffffff;
+  background-color: #3a3a3a;
+}
+
+.path-box-toggle:focus-visible {
+  outline: 1px solid #4fc3f7;
+  outline-offset: 1px;
+}
+
+/* Latched while the box is an editable search field. */
+.path-box-toggle.active {
+  color: #1e1e1e;
+  background-color: #4fc3f7;
+}
+
+/* Matches dropdown: anchored to the box, drawn OVER whatever sits below it.
+   `left/right: 0` (not a fixed width) so it follows the box on every surface,
+   including the narrow header variant. */
+.path-box-results {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  right: 0;
+  z-index: 20;
+  max-height: 240px;
+  margin-top: 2px;
+  padding: 2px 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  background-color: #252526;
+  border: 1px solid #444;
+  border-radius: 4px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.45);
+}
+
+/* One match, on ONE line: the file NAME first, then its DIRECTORY dimmed after
+   it. The row is a flex ROW with a baseline alignment, so the 12px name and the
+   11px path sit on the same text baseline, and both children may shrink (each
+   carries `min-width: 0`), which is what lets a long name or a long path
+   truncate with an ellipsis instead of pushing the other one out of the box.
+   Laying each match out on a single line halves the height of the list, so many
+   more files fit in the dropdown before it starts to scroll. */
+.path-box-result {
+  display: flex;
+  flex-direction: row;
+  align-items: baseline;
+  gap: 8px;
+  padding: 3px 8px;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.path-box-result:hover {
+  background-color: #3a3a3d;
+}
+
+.path-box-result.selected {
+  background-color: #094771;
+}
+
+/* The file name: kept as wide as it needs to be, then allowed to shrink and
+   ellipsise. `flex: 0 1 auto` (not `1 1 auto`) means it only gives up width
+   when the row is genuinely too narrow, so a short name is never squeezed by a
+   long directory beside it. Its 16px line box sets the row height. */
+.path-box-result-name {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  line-height: 16px;
+  color: #ccc;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The directory, on the SAME line, to the right of the name. It takes the
+   remaining width (`flex: 1 1 auto`) and truncates from the LEFT - the `rtl`
+   trick below - so the END of a long path stays visible, which is the part that
+   identifies it. `line-height` matches the name's 16px so baseline alignment
+   cannot make the row taller than one line. */
+.path-box-result-dir {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  line-height: 16px;
+  color: #808080;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  /* rtl + left align: keeps the END of a long directory visible, which is the
+     part that identifies it. */
+  direction: rtl;
+  text-align: left;
+}
+
+/* A hint line ('No matching file', 'Searching ...'), never selectable. */
+.path-box-hint {
+  display: block;
+  padding: 3px 8px;
+  font-size: 12px;
+  line-height: 16px;
+  color: #808080;
+}
+
+/* Both the field and the dropdown are switched with the shared .hidden class;
+   the explicit rules below keep them out of the flex flow even when a host
+   page defines .hidden without display:none. */
+.path-box-input.hidden,
+.path-box-results.hidden {
+  display: none !important;
 }

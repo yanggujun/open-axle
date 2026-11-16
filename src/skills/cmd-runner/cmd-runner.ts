@@ -236,11 +236,11 @@ async function runCommandFromPayload(payload: string | Record<string, any>, runt
 
       let out = `return code: ${returncode}\n\n`;
       if (cappedStdout) {
-        out += cappedStdout + '\n';
+        out += 'stdout:\n' + fenceCode('bash', cappedStdout) + '\n';
       }
       if (cappedStderr) {
-        out += 'stderr\n';
-        out += cappedStderr;
+        out += 'stderr:\n';
+        out += fenceCode('bash', cappedStderr);
       }
 
       const seq = data.sequential;

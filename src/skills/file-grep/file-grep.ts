@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Runtime, ExecutionResponse, extractJson, getSequential, buildConnectConfig, connect, execCommand, shellQuote } from '../../common/common';
+import { Runtime, ExecutionResponse, extractJson, getSequential, buildConnectConfig, connect, execCommand, shellQuote, fenceCode } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -354,7 +354,11 @@ function grepFromPayload(payload: string | Record<string, any>, runtime?: Runtim
     return _wrapResponse('No file is found', data.sequential);
   }
 
-  return _wrapResponse(output, data.sequential, data.prompt);
+  return _wrapResponse(formatResult(output), data.sequential, data.prompt);
+}
+
+function formatResult(output: string): string {
+  return 'grep result:\n' + fenceCode('bash', output);
 }
 
 // ---------------------------------------------------------------------------
@@ -474,7 +478,7 @@ async function grepFromPayloadRemote(
       output += `... output truncated at ${MAX_OUTPUT_CHARS} characters\n`;
     }
 
-    return _wrapResponse(output, data.sequential, data.prompt);
+    return _wrapResponse(formatResult(output), data.sequential, data.prompt);
   } catch (e: any) {
     return _wrapResponse(_errorContentJson(`Failed to grep remote files over SSH: ${e.message}`), data.sequential, data.prompt);
   } finally {

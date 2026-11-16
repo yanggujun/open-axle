@@ -3,6 +3,7 @@ export interface Protocol {
   content: string;
   format: string; // text, hyperlink, path, md, py, java, ...
   signal: string;
+  misc: Record<string, string>;
 }
 
 /** Simple event object mimicking asyncio.Event */
@@ -54,7 +55,7 @@ export class QueuedConduit extends Conduit {
 
   sendMessage(message: string, format: string = '', content: string = ''): void {
     const signal = '';
-    const protocol: Protocol = {message, format, content, signal};
+    const protocol: Protocol = {message, format, content, signal, misc: {}};
     this.enqueue(protocol);
   }
 
@@ -68,7 +69,7 @@ export class QueuedConduit extends Conduit {
 
   async sendMessageAsync(message: string, format: string = '', content: string = ''): Promise<void> {
     const signal = '';
-    const protocol: Protocol = {message, format, content, signal};
+    const protocol: Protocol = {message, format, content, signal, misc:{}};
     await this.enqueueAsync(protocol);
   }
 

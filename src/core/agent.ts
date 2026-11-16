@@ -253,7 +253,7 @@ export class AxleAgent {
           } else if (result.format === 'svg') {
             this.conduit.sendMessage('', result.format, result.content);
           } else {
-            const prc: Protocol = {message: result.content, content: '', format: result.format, signal: (persist ? 'Persistable' : '')};
+            const prc: Protocol = {message: result.content, content: '', format: result.format, signal: (persist ? 'Persistable' : ''), misc: result.misc};
             this.conduit.send(prc);
           }
         }
@@ -283,7 +283,7 @@ export class AxleAgent {
         if (result) {
           const rsl = JSON.stringify(result)
           logger.log(`Execution result: ${rsl}`);
-          const prc: Protocol = {message: rsl, content: '', format: '', signal: 'Persistable'}
+          const prc: Protocol = {message: rsl, content: '', format: '', signal: 'Persistable', misc: {}};
           this.conduit.send(prc);
         } else {
           logger.log('Empty result');

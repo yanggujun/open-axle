@@ -195,11 +195,25 @@ h1 {
 }
 
 .tab-button.add-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 36px;
+  padding: 8px 12px;
+  box-sizing: border-box;
   color: #a5d6a7;
 }
 
-.tab-button.config-tab {
-  color: #ffcc80;
+.tab-button.add-tab .menu-icon {
+  width: 16px;
+  height: 16px;
+  stroke-width: 2.4;
+}
+
+.tab-button.add-tab:hover {
+  color: #1e1e1e;
+  background-color: #4fc3f7;
+  border-color: #4fc3f7;
 }
 
 /* Main split region: horizontal flex row. The LEFT column (.left-column) holds
@@ -218,10 +232,21 @@ h1 {
 }
 
 /* LEFT column: the model tab bar (#tab-bar) sits on the TOP line and the model
-   chat workspaces fill the space below it. Taking flex:2 of #main makes it
-   ~2/3 of the total width, matching the right dock's 1/3. */
+   chat workspaces fill the space below it.
+
+   DEFAULT SPLIT: 75% chat / 25% dock. The dock owns a fixed width
+   (--right-width, seeded at 25% by initRightWorkspace in src/rightWorkspace.ts)
+   and THIS column is the flex filler that absorbs whatever is left, so
+   flex:3 against the dock's 1 share is what makes the pre-JS paint add up to
+   75/25 as well.
+
+   When the view space opens it takes 45% of #main (see src/viewSpace.ts and
+   the .view-space rules in src/workingDir.css) and the dock keeps its 25%, so
+   this filler lands on the remaining 30% - the 30/45/25 split - with no extra
+   width being written to the column. Closing the view space hides it and the
+   filler simply grows back to 75%. */
 .left-column {
-  flex: 2 1 0;
+  flex: 3 1 0;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -248,11 +273,13 @@ h1 {
    seeds it (380px) and makeResizable() updates it live while the left-edge grip
    is dragged. flex:0 0 auto means the dock neither grows nor shrinks, so
    dragging the grip resizes it left <-> right while .left-column (flex:2) fills
-   the remaining space. Falls back to ~1/3 of the split when unset. */
+   the remaining space. Falls back to 25% of the split when unset, which is
+   the default 75/25 ratio; initRightWorkspace() then writes the same 25% as a
+   clamped px value, so the first paint and the live width agree. */
 #right-workspace,
 .right-workspace {
   flex: 0 0 auto;
-  width: var(--right-width, 33.33%);
+  width: var(--right-width, 25%);
   position: relative;
   display: flex;
   /* Vertical column: the tab-bar header sits on top and the panels fill the
@@ -538,29 +565,16 @@ h1 {
   background-color: #c62828;
 }
 
-/* Each per-model workspace panel (and the config panel) fills the
+/* Each per-model workspace panel fills the
    workspaces area as a vertical flex column. Only the non-hidden
    panel is visible, so each tab shows its own page. */
 .workspace,
-#workspaces > .chat-area,
-#workspaces > .config-page {
+#workspaces > .chat-area {
   flex: 1 1 auto;
   display: flex;
   flex-direction: column;
   min-height: 0;
   overflow: hidden;
-}
-
-/* The dynamically-created config panel: give it comfortable padding
-   and allow scrolling if the form is tall. */
-.config-page {
-  padding: 24px;
-  overflow-y: auto;
-}
-
-.config-page h2 {
-  margin-top: 0;
-  color: #4fc3f7;
 }
 
 .config-form {
@@ -618,13 +632,13 @@ h1 {
   color: #c9b758;
 }
 
-/* Tab label takes the available space so the close (×) is pushed to the
+/* Tab label takes the available space so the close (Ã—) is pushed to the
    right edge of the tab, well separated from the model name. */
 .tab-label {
   flex: 1;
 }
 
-/* Close (×) icon: subtle, right-aligned, highlights on hover. */
+/* Close (Ã—) icon: subtle, right-aligned, highlights on hover. */
 .tab-close {
   margin-left: auto;
   padding: 0 6px;
@@ -862,31 +876,6 @@ pre {
   width: 28px;
   height: 28px;
   border-radius: 6px;
-  cursor: pointer;
-  transition: background-color 0.12s ease, color 0.12s ease;
-}
-
-.logs-window-close:hover {
-  color: #fff;
-  background-color: #c62828;
-}
-
-/* Scrollable, pre-formatted log content. It flex-fills the rest of the
-   panel and is the only scrolling area, so the whole log can be shown and
-   the view can stay pinned to the bottom. */
-.logs-window-body {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: auto;
-  padding: 10px 12px;
-  white-space: pre-wrap;
-  word-break: break-word;
-  font-family: 'Consolas', 'Courier New', monospace;
-  font-size: 12px;
-  line-height: 1.45;
-  background-color: #141414;
-  color: #d4d4d4;
 }
 
 /* Bottom-edge grip that makes the panel vertically resizable. Dragging it
@@ -1448,7 +1437,7 @@ pre {
   max-width: calc(100% - 16px);
 }
 
-/* ---- Per-model edit (✎) icon on the model tab ---- */
+/* ---- Per-model edit (âœŽ) icon on the model tab ---- */
 .tab-edit {
   padding: 0 6px;
   border-radius: 4px;
@@ -1742,4 +1731,28 @@ pre {
   height: 14px;
   flex: 0 0 auto;
   pointer-events: none;
+}
+
+
+/* 'Copy' button of the per-model edit dialog. Styled like the PRIMARY Save
+   button (.config-form button[type="submit"]) so the two look identical:
+   same accent background, no border, dark bold text, matching padding,
+   border-radius and hover. It performs the same kind of action as Save --
+   it opens the copy configuration rather than merely dismissing the dialog.
+   `margin-left: auto` inside the flex .config-actions row pushes it to the
+   RIGHT edge, so the dialog reads: [Save] [Cancel] ...... [Copy].
+   Rendered in EDIT mode only (see openModelDialog). */
+.config-copy {
+  margin-left: auto;
+  background-color: #4fc3f7;
+  border: none;
+  color: #1e1e1e;
+  padding: 10px 20px;
+  border-radius: 4px;
+  cursor: pointer;
+  font-weight: bold;
+}
+
+.config-copy:hover {
+  background-color: #81d4fa;
 }

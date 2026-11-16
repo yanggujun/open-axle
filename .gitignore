@@ -102,7 +102,6 @@ out/
 /build
 **/*.swp
 **/node_modules/
-**/package-lock.json
 **/*.map
 /.llm.config
 /.skill.config

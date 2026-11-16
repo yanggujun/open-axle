@@ -17,6 +17,7 @@ import {
 } from './rightWorkspace';
 import { LOGS_TAB_ID, buildLogView } from './logView';
 import { FILES_TAB_ID, buildFilesView, refreshFiles, setFilesModelName, setFilesChangeDirHandler, setFilesSetDirHandler, setFilesInsertToChatHandler, getFilesHighlightedFolder } from './filesTab';
+import { setViewSpaceModelName } from './viewSpace';
 import {
   createAttachmentState,
   registerAttachment,
@@ -29,6 +30,7 @@ import {
   type AttachmentState,
   type PastedImage,
 } from './attachment';
+import { renderDiffInto } from './diffView';
 
 /**
  * Destination for a 'Save' action taken from the chat log or an image preview:
@@ -79,9 +81,16 @@ interface AxleBroadcast {
   content?: string;
   /**
    * Conduit Protocol `signal`. 'persistable' messages offer hover buttons that
-   * save them into the working directory or into its `.axle` folder.
+   * save them into the working directory or into its `.axle/skills` folder.
    */
   signal?: string;
+  /**
+   * Conduit Protocol `misc` metadata. For a `format === 'diff'` message (a
+   * successful `change_file` operation) this carries `origin` — the file text
+   * BEFORE the change — and `new` — the file text AFTER the change — so the
+   * chat log can render a side-by-side diff view of the two.
+   */
+  misc?: Record<string, string>;
 }
 
 declare global {
@@ -169,10 +178,6 @@ let currentModelName: string | null = null;
 // Per-model workspace panels. Keyed by model name. Each panel keeps its own
 // DOM (and therefore its own chat history), so no shared buffering is needed.
 const workspaceMap = new Map<string, Workspace>();
-
-// The single, temporary "add LLM" config panel (built on demand when the user
-// clicks the '+' tab). Only one config tab may exist at a time.
-let configPanel: HTMLElement | null = null;
 
 function escapeHtml(text: string): string {
   return text
@@ -263,20 +268,46 @@ function renderMessageInto(
   text: string,
   format = '',
   signal = '',
-  modelName?: string
+  modelName?: string,
+  misc?: Record<string, string>
 ): void {
   const msgDiv = document.createElement('div');
-  msgDiv.className = `message ${type}${format === 'reasoning' ? ' reasoning' : ''}`;
+  msgDiv.className = `message ${type}${format === 'reasoning' ? ' reasoning' : ''}${format === 'diff' ? ' diff' : ''}`;
   const time = new Date().toLocaleTimeString();
+
+  // A 'diff' message (a successful change_file operation) carries the file
+  // text BEFORE the change in `misc.origin` and AFTER the change in
+  // `misc.new`, plus the path that was written in `misc.path`. In that case the
+  // body is left EMPTY here and filled below by the side-by-side diff renderer;
+  // every other message keeps the usual (markdown) body.
+  const diffOrigin = misc?.origin;
+  const diffNew = misc?.new;
+  const diffPath = misc?.path;
+  const hasDiff =
+    format === 'diff' && typeof diffOrigin === 'string' && typeof diffNew === 'string';
 
   msgDiv.innerHTML = `
     <div class="message-header">
       <span class="time">${time}</span>
     </div>
     <div class="message-divider"></div>
-    <div class="message-body">${text ? formatBody(text, format) : ''}</div>
+    <div class="message-body">${hasDiff ? '' : text ? formatBody(text, format) : ''}</div>
   `;
   log.appendChild(msgDiv);
+
+  // Original text on the LEFT, new text on the RIGHT, differing lines and
+  // words highlighted, with the edited file's path shown above the grid.
+  if (hasDiff) {
+    const bodyEl = msgDiv.querySelector('.message-body') as HTMLElement | null;
+    if (bodyEl) {
+      renderDiffInto(
+        bodyEl,
+        diffOrigin as string,
+        diffNew as string,
+        typeof diffPath === 'string' ? diffPath : undefined
+      );
+    }
+  }
 
 
   // Handle long system messages (broadcast type) truncation.
@@ -313,7 +344,7 @@ function renderMessageInto(
   }
 
   // A 'persistable' message offers hover-revealed actions that save its text
-  // into the working directory or into the working directory's .axle folder.
+  // into the working directory or into the working directory's .axle/skills folder.
   if (signal && signal.toLowerCase() === 'persistable' && text) {
     attachPersistableActions(msgDiv, text, modelName);
   }
@@ -326,7 +357,7 @@ function renderMessageInto(
  *
  * Two buttons are shown while the pointer is over the message:
  *   - 'Save'           writes the message text into the working directory;
- *   - 'Save as Skill'  writes it into <workingDir>/.axle (created if missing).
+ *   - 'Save as Skill'  writes it into <workingDir>/.axle/skills (created if missing).
  *
  * Both open the SAME inline name editor the chat-log images use (file-name
  * input + confirm check mark + cancel X + error line), so choosing a name
@@ -380,7 +411,7 @@ function attachPersistableActions(
 
   /**
    * Open the shared name editor. `asSkill` decides the destination folder:
-   * the working directory itself, or its .axle sub-folder.
+   * the working directory itself, or its .axle/skills sub-folder.
    */
   const openEditor = (asSkill: boolean): void => {
     if (editor) return;
@@ -398,7 +429,7 @@ function attachPersistableActions(
     nameInput.className = 'chat-image-save-name';
     nameInput.value = defaultName();
     nameInput.title = asSkill
-      ? 'File name (saved into the .axle folder)'
+      ? 'File name (saved into the .axle/skills folder)'
       : 'File name (saved into the working directory)';
 
     const confirmBtn = document.createElement('button');
@@ -513,7 +544,7 @@ function attachPersistableActions(
   skillBtn.type = 'button';
   skillBtn.className = 'message-action-btn';
   skillBtn.textContent = 'Save as Skill';
-  skillBtn.title = 'Save this message into the .axle folder of the working directory';
+  skillBtn.title = 'Save this message into the .axle/skills folder of the working directory';
   skillBtn.addEventListener('click', (e: MouseEvent) => {
     e.stopPropagation();
     openEditor(true);
@@ -802,10 +833,6 @@ function buildAllWorkspaces(): void {
     workspaces.appendChild(ws.panel);
   }
 
-  // Preserve an open config panel across a rebuild.
-  if (configPanel) {
-    workspaces.appendChild(configPanel);
-  }
 }
 
 /** Route a broadcast to the matching model's OWN chat-log. */
@@ -884,7 +911,7 @@ function handleResponse(data: AxleBroadcast): void {
   // The escaped source is still shown when no picture could be built, so a
   // broken payload is never silently swallowed.
   if (data.message && !(data.format === 'svg' && imageSrc)) {
-    renderMessageInto(ws.chatLog, 'broadcast', data.message, data.format, data.signal ?? '', modelName);
+    renderMessageInto(ws.chatLog, 'broadcast', data.message, data.format, data.signal ?? '', modelName, data.misc);
   }
 
   // Render the image as a chat message bubble IDENTICAL to a user-sent image:
@@ -1454,113 +1481,6 @@ function buildModelForm(options: ModelFormOptions): ModelFormHandle {
   return { form, submitBtn, setStatus };
 }
 
-/**
- * Dynamically create the "add LLM" config panel (a workspace-style tab panel)
- * with its own form. On submit it persists the new model and swaps the config
- * tab for the newly-created model's workspace.
- */
-function buildConfigPanel(): HTMLElement {
-  const panel = document.createElement('div');
-  panel.className = 'config-page workspace hidden';
-  panel.dataset.config = 'true';
-
-  const heading = document.createElement('h2');
-  heading.textContent = 'Add an LLM Configuration';
-  panel.appendChild(heading);
-
-  // Only offer Cancel when there is at least one model to return to.
-  const extraActions: HTMLElement[] = [];
-  if (models.length > 0) {
-    const cancelBtn = document.createElement('button');
-    cancelBtn.type = 'button';
-    cancelBtn.className = 'config-cancel';
-    cancelBtn.textContent = 'Cancel';
-    cancelBtn.addEventListener('click', () => closeConfigView());
-    extraActions.push(cancelBtn);
-  }
-
-  // The 'New LLM' page renders the SAME shared form the edit dialog uses, so
-  // the two places cannot drift apart.
-  let handle: ModelFormHandle | null = null;
-  handle = buildModelForm({
-    submitLabel: 'Add LLM',
-    extraActions,
-    onSubmit: async (values) => {
-      const name = values.name.trim();
-
-      // A model name is the unique key of the configuration: refuse to add a
-      // second entry with a name that is already taken.
-      const taken =
-        allModels.some((m) => m.name === name) || models.some((m) => m.name === name);
-      if (taken) {
-        handle?.setStatus('A model named "' + name + '" already exists.', true);
-        return;
-      }
-
-      const newModel: ModelConfig = {
-        name,
-        url: values.url,
-        key: values.key,
-        model: values.model,
-        skillsFolder: values.skillsFolder || 'skills',
-        responses: values.responses,
-      };
-
-      await window.axle.addModel(newModel);
-      models = await window.axle.getActiveModels();
-      allModels = await window.axle.getModels();
-      closeConfigTab();
-      buildAllWorkspaces();
-      renderTabs();
-      switchToModel(name);
-    },
-  });
-
-  panel.appendChild(handle.form);
-  return panel;
-}
-
-/** Open (or re-focus) the single add-LLM config tab. */
-function openConfigTab(): void {
-  if (!configPanel) {
-    configPanel = buildConfigPanel();
-    workspaces.appendChild(configPanel);
-  }
-
-  // Hide all model panels; show only the config panel.
-  for (const [, ws] of workspaceMap) {
-    ws.panel.classList.add('hidden');
-  }
-  configPanel.classList.remove('hidden');
-  currentModelName = null;
-
-  // Make sure the tab bar reflects the open config tab.
-  showWorkspaces();
-  renderTabs();
-}
-
-/** Close and destroy the config tab if present. */
-function closeConfigTab(): void {
-  if (configPanel) {
-    configPanel.remove();
-    configPanel = null;
-  }
-}
-
-/**
- * Close the 'New LLM' config view and return to a model workspace. If at least
- * one model exists we switch to the first; otherwise we simply show the (empty)
- * workspaces shell. Used by the config tab's close (×) and the form's Cancel.
- */
-function closeConfigView(): void {
-  closeConfigTab();
-  renderTabs();
-  if (models.length > 0) {
-    switchToModel(models[0].name);
-  } else {
-    showWorkspaces();
-  }
-}
 
 // ---- Per-model edit dialog ----
 
@@ -1578,11 +1498,25 @@ function onEditDialogKeydown(e: KeyboardEvent): void {
 }
 
 /**
+ * The document-level 'click outside' listener armed by the OPEN dialog, or null
+ * when none is armed. Tracking it here (instead of leaving it only inside the
+ * closure that installed it) lets closeEditDialog() always detach it: the
+ * dialog can now be replaced from WITHIN itself -- the Copy button of the edit
+ * dialog opens the copy dialog -- and the old dialog's stale listener would
+ * otherwise close the freshly opened dialog on its first outside click.
+ */
+let editDialogOutsideClick: ((ev: MouseEvent) => void) | null = null;
+
+/**
  * Close and destroy the floating edit dialog, releasing the document-level
- * listener it installed.
+ * listeners it installed.
  */
 function closeEditDialog(): void {
   document.removeEventListener('keydown', onEditDialogKeydown);
+  if (editDialogOutsideClick) {
+    document.removeEventListener('click', editDialogOutsideClick);
+    editDialogOutsideClick = null;
+  }
   if (editDialog) {
     editDialog.remove();
     editDialog = null;
@@ -1629,33 +1563,43 @@ function positionEditDialog(dialog: HTMLElement, anchor?: HTMLElement): void {
  *             editable so the user names the new entry; the submit button
  *             creates it through the axle:addModel IPC handler.
  */
-type ModelDialogMode = 'edit' | 'copy';
+type ModelDialogMode = 'edit' | 'copy' | 'create';
 
 /**
- * Open the floating model dialog for an existing model.
+ * Open the floating model dialog.
  *
- * Both modes render the SAME form as the 'New LLM' page (buildModelForm), so
- * the three places cannot drift apart; see ModelDialogMode for the differences
- * between editing a model and copying one.
+ * Every mode renders the SAME form as the 'New LLM' page (buildModelForm), so
+ * the places cannot drift apart; see ModelDialogMode for the differences
+ * between editing, copying and creating a model.
  */
 function openModelDialog(mode: ModelDialogMode, modelName: string, anchor?: HTMLElement): void {
   const isCopy = mode === 'copy';
+  const isCreate = mode === 'create';
 
   // Never stack dialogs: a new click replaces the open one.
   closeEditDialog();
 
+  // CREATE mode has NO source model: the dialog starts from an EMPTY form.
   const source =
     allModels.find((m) => m.name === modelName) ??
     models.find((m) => m.name === modelName);
 
-  if (!source) {
+  if (!source && !isCreate) {
     console.warn('[axle] ' + (isCopy ? 'Copy' : 'Edit') + ': unknown model:', modelName);
     return;
   }
 
+  // Initial field values: EMPTY when creating, otherwise the source model
+  // (with the Name blanked out for a copy). Narrowing on `source` also keeps
+  // the spread below type-safe.
+  const initialValues: Partial<ModelConfig> = source
+    ? (isCopy ? { ...source, name: '' } : source)
+    : {};
+
   const dialog = document.createElement('div');
   dialog.className = 'edit-dialog';
-  dialog.dataset.model = modelName;
+  // The model name only exists for the edit / copy modes.
+  if (!isCreate) dialog.dataset.model = modelName;
   dialog.dataset.mode = mode;
   // Clicks inside the dialog must never reach the outside-click handler below
   // (which would immediately close it again).
@@ -1667,7 +1611,11 @@ function openModelDialog(mode: ModelDialogMode, modelName: string, anchor?: HTML
 
   const title = document.createElement('span');
   title.className = 'edit-dialog-title';
-  title.textContent = isCopy ? 'Copy LLM Configuration' : 'Edit LLM Configuration';
+  title.textContent = isCreate
+    ? 'New LLM Configuration'
+    : isCopy
+      ? 'Copy LLM Configuration'
+      : 'Edit LLM Configuration';
 
   const closeBtn = document.createElement('button');
   closeBtn.type = 'button';
@@ -1693,16 +1641,49 @@ function openModelDialog(mode: ModelDialogMode, modelName: string, anchor?: HTML
     closeEditDialog();
   });
 
+  // Action row, left to right: Save / Add LLM, Cancel, Copy.
+  const extraActions: HTMLElement[] = [cancelBtn];
+
+  // EDIT mode only: a 'Copy' button so the ACTIVE model can be duplicated
+  // straight from its edit dialog, without closing the tab first. It reuses the
+  // EXACT behaviour of the Copy button the '+ Add' menu offers for INACTIVE
+  // models: openCopyDialog() opens the same dialog as this one but with the
+  // NAME empty and every other value pre-filled, and confirming adds a NEW
+  // model through axle:addModel. Opening it closes this dialog (openModelDialog
+  // destroys any previous dialog) and re-anchors the popover to the SAME tab,
+  // so it appears exactly where this dialog did.
+  //
+  // COPY and CREATE deliberately get NO copy button: copying an existing model
+  // is meaningless when creating one from scratch, and in copy mode the user
+  // is already creating a duplicate.
+  if (mode === 'edit') {
+    const copyBtn = document.createElement('button');
+    copyBtn.type = 'button';
+    copyBtn.className = 'config-copy';
+    copyBtn.textContent = 'Copy';
+    copyBtn.title = 'Copy ' + modelName + ' to a new LLM';
+    copyBtn.setAttribute('aria-label', 'Copy ' + modelName + ' to a new LLM');
+    copyBtn.addEventListener('click', (e: MouseEvent) => {
+      e.stopPropagation();
+      openCopyDialog(modelName, anchor);
+    });
+    extraActions.push(copyBtn);
+  }
+
   let handle: ModelFormHandle | null = null;
   handle = buildModelForm({
-    // COPY starts from a full copy of the source model except the NAME, which
-    // is left EMPTY so the user names the new model before it is created.
-    values: isCopy ? { ...source, name: '' } : source,
-    lockName: !isCopy,
-    submitLabel: isCopy ? 'Add LLM' : 'Save',
-    extraActions: [cancelBtn],
+    // CREATE starts from an entirely EMPTY form; COPY starts from a full copy
+    // of the source model except the NAME, which is left EMPTY so the user
+    // names the new model before it is created; EDIT pre-fills everything.
+    values: initialValues,
+    // Only EDIT locks the name: it is the immutable key of an existing config.
+    lockName: mode === 'edit',
+    submitLabel: mode === 'edit' ? 'Save' : 'Add LLM',
+    extraActions,
     onSubmit: async (values) => {
-      if (isCopy) {
+      // COPY and CREATE BOTH add a brand-new model through axle:addModel; only
+      // EDIT updates the existing entry (see the update branch below).
+      if (isCopy || isCreate) {
         const name = values.name.trim();
         if (!name) {
           handle?.setStatus('Please enter a name for the new model.', true);
@@ -1737,10 +1718,8 @@ function openModelDialog(mode: ModelDialogMode, modelName: string, anchor?: HTML
         }
 
         closeEditDialog();
-        // A brand-new model needs its own workspace panel: drop the temporary
-        // config tab, rebuild the workspaces, re-render the tabs and switch to
-        // the newly created model.
-        closeConfigTab();
+        // A brand-new model needs its own workspace panel: rebuild the
+        // workspaces, re-render the tabs and switch to the newly created model.
         buildAllWorkspaces();
         renderTabs();
         switchToModel(name);
@@ -1783,9 +1762,9 @@ function openModelDialog(mode: ModelDialogMode, modelName: string, anchor?: HTML
 
   document.addEventListener('keydown', onEditDialogKeydown);
 
-  // In COPY mode focus the (empty) Name field so a name can be typed at once;
-  // the Name input is the FIRST input of the shared form.
-  if (isCopy) {
+  // In CREATE and COPY modes focus the (empty) Name field so a name can be
+  // typed at once; the Name input is the FIRST input of the shared form.
+  if (isCopy || isCreate) {
     const nameInput = handle.form.querySelector('input') as HTMLInputElement | null;
     if (nameInput) {
       nameInput.focus();
@@ -1793,14 +1772,18 @@ function openModelDialog(mode: ModelDialogMode, modelName: string, anchor?: HTML
     }
   }
 
-  // Close when clicking anywhere outside the dialog.
+  // Close when clicking anywhere outside the dialog. The listener is stored in
+  // editDialogOutsideClick so closeEditDialog() can always detach it -- which
+  // matters now that the Copy button of this dialog replaces it from within.
   setTimeout(() => {
+    // The dialog may already be gone (e.g. replaced by the Copy dialog).
+    if (editDialog !== dialog) return;
     const onDocClick = (ev: MouseEvent): void => {
       if (!dialog.contains(ev.target as Node)) {
         closeEditDialog();
-        document.removeEventListener('click', onDocClick);
       }
     };
+    editDialogOutsideClick = onDocClick;
     document.addEventListener('click', onDocClick);
   }, 0);
 }
@@ -1819,14 +1802,25 @@ function openCopyDialog(modelName: string, anchor?: HTMLElement): void {
   openModelDialog('copy', modelName, anchor);
 }
 
+/**
+ * Open the dialog in CREATE mode: the SAME 'Edit LLM Configuration' form, but
+ * completely EMPTY so a brand-new model is described from scratch, and WITHOUT
+ * the Copy button (there is nothing to copy when starting a new entry).
+ *
+ * There is no source model, hence the empty model name. Confirming adds the
+ * model through window.axle.addModel and switches to it, exactly like copy
+ * mode does.
+ */
+function openCreateDialog(anchor?: HTMLElement): void {
+  openModelDialog('create', '', anchor);
+}
+
 // ---- Tab rendering ----
 function renderTabs(): void {
   tabBar.innerHTML = '';
 
-  const configOpen = configPanel !== null;
-
   for (const model of models) {
-    const isActive = !configOpen && model.name === currentModelName;
+    const isActive = model.name === currentModelName;
     const tab = document.createElement('div');
     tab.className = 'tab-button' + (isActive ? ' active' : '');
     tab.dataset.model = model.name;
@@ -1863,38 +1857,22 @@ function renderTabs(): void {
     tabBar.appendChild(tab);
   }
 
-  // '+' Add tab: opens the dynamic config tab.
+  // '+' Add tab: offers the closed models to reopen (plus per-model Copy) and
+  // the 'New LLM' action, which opens the shared configuration DIALOG in create
+  // mode -- an empty form with no Copy button -- instead of a whole tab page.
   const addBtn = document.createElement('button');
   addBtn.className = 'tab-button add-tab';
   addBtn.id = 'add-tab-btn';
-  addBtn.textContent = '+';
+  // The '+' glyph is an inline SVG (the SAME createPlusIcon the '+ New LLM'
+  // menu entry uses) rather than a text character: it stays crisp at any size,
+  // inherits the button colour through currentColor, and is centred by the
+  // .tab-button.add-tab rules in styles.css.
+  addBtn.appendChild(createPlusIcon());
+  addBtn.title = 'Add or reopen an LLM';
+  addBtn.setAttribute('aria-label', 'Add or reopen an LLM');
   addBtn.addEventListener('click', openAddMenu);
   tabBar.appendChild(addBtn);
 
-  // Temporary 'New LLM' tab shown only while the config tab is open.
-  if (configOpen) {
-    const cfgTab = document.createElement('div');
-    cfgTab.className = 'tab-button config-tab active';
-
-    const cfgLabel = document.createElement('span');
-    cfgLabel.className = 'tab-label';
-    cfgLabel.textContent = 'New LLM';
-    cfgLabel.addEventListener('click', openConfigTab);
-    cfgTab.appendChild(cfgLabel);
-
-    // Close (×) icon: dismiss the config view and return to a model workspace.
-    const cfgClose = document.createElement('span');
-    cfgClose.className = 'tab-close';
-    cfgClose.textContent = '×';
-    cfgClose.title = 'Close';
-    cfgClose.addEventListener('click', (e: MouseEvent) => {
-      e.stopPropagation();
-      closeConfigView();
-    });
-    cfgTab.appendChild(cfgClose);
-
-    tabBar.appendChild(cfgTab);
-  }
 }
 
 function showWorkspaces(): void {
@@ -1920,10 +1898,10 @@ function switchToModel(modelName: string): void {
   // directory of the model currently in focus.
   setFilesModelName(modelName);
 
-  // Hide the config panel (if any) when switching to a model.
-  if (configPanel) {
-    configPanel.classList.add('hidden');
-  }
+  // The view space is model based too, like the 'Files' tab: switching models
+  // destroys the view space of the model being left behind and leaves this
+  // model's view space collapsed, so no file of another model stays visible.
+  setViewSpaceModelName(modelName);
 
   // Toggle visibility so only the active model's panel is shown.
   for (const [name, ws] of workspaceMap) {
@@ -1973,7 +1951,10 @@ async function closeModel(name: string): Promise<void> {
   if (models.length > 0) {
     switchToModel(models[0].name);
   } else {
-    openConfigTab();
+    // No model left: there is no config TAB page any more, so simply show the
+    // (empty) workspaces shell and offer the create dialog.
+    showWorkspaces();
+    openCreateDialog();
   }
 }
 
@@ -1987,7 +1968,6 @@ async function reopenModel(name: string): Promise<void> {
     console.error('Failed to reopen model:', e);
     return;
   }
-  closeConfigTab();
   buildAllWorkspaces();
   renderTabs();
   switchToModel(name);
@@ -2067,7 +2047,7 @@ function closeAddMenu(): void {
 /**
  * Click handler for the '+' Add tab. If there are inactive (closed) models,
  * show a small dropdown letting the user reopen one or create a brand new LLM.
- * If there are none, open the config tab directly.
+ * If there are none, open the new-LLM dialog directly.
  */
 async function openAddMenu(): Promise<void> {
   // Refresh the full list so the menu reflects the latest closed models.
@@ -2079,8 +2059,11 @@ async function openAddMenu(): Promise<void> {
 
   const inactive = allModels.filter(m => !models.some(a => a.name === m.name));
 
+  // With no closed model to offer, the '+' button goes straight to creating a
+  // new LLM: the SAME 'Edit LLM Configuration' dialog, empty and anchored to
+  // this very button.
   if (inactive.length === 0) {
-    openConfigTab();
+    openCreateDialog(document.getElementById('add-tab-btn') ?? undefined);
     return;
   }
 
@@ -2159,8 +2142,11 @@ async function openAddMenu(): Promise<void> {
   newItem.appendChild(newIconCell);
 
   newItem.addEventListener('click', () => {
+    // The create dialog is anchored to the '+ Add' button, exactly like the
+    // per-model Copy entries above, so it appears where the menu was.
+    const anchor = document.getElementById('add-tab-btn') ?? undefined;
     closeAddMenu();
-    openConfigTab();
+    openCreateDialog(anchor);
   });
   menu.appendChild(newItem);
 
@@ -2370,9 +2356,14 @@ async function init(): Promise<void> {
   }
 
   if (models.length === 0) {
-    // No models configured: open the dynamic config tab automatically.
+    // No models configured: show the (empty) workspaces shell -- there is no
+    // config TAB page any more -- and open the shared create dialog so the
+    // first model can be added straight away.
     showWorkspaces();
-    openConfigTab();
+    renderTabs();
+    openCreateDialog(
+      (document.getElementById('add-tab-btn') as HTMLElement | null) ?? undefined
+    );
   } else {
     // Build one isolated workspace per model, then activate the first one.
     buildAllWorkspaces();

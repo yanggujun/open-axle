@@ -37,7 +37,7 @@ When the skill is triggered, the LLM must:
    - **cwd** (optional): The working directory for the command. Defaults to current working directory (`./`).
    - **timeout** (optional): Maximum execution time in seconds. Defaults to `30`.
    - **shell** (optional): Whether to run via shell. Defaults to `true`.
-   - **shelltype** (required): The type of shell to use. Possible values: "bash" (Linux/Unix default), "maccmd" (macOS terminal), "windowsbat" (Windows Command Prompt), "windowsps" (Windows PowerShell). If not specified, the LLM should specify the output command shell type for the skill executor to run.
+   - **shelltype** (required): The type of shell to use. Possible values: "bash" (Linux/Unix default), "maccmd" (macOS terminal), "windowsbat" (Windows Command Prompt), "windowsps" (Windows PowerShell). If not specified, the LLM should specify the output command shell type for the skill executor to run. On windows, when not explicitly specified, please always use windowsbat over windowsps. Only if the command cannot be achieved by windowsbat, use windowsps.
    - **env** (optional): A dictionary of environment variables to set.
    - **description** (optional): One-line summary of the command.
    - **sequential** (optional): If the output is needed as input for a follow-up AI task.

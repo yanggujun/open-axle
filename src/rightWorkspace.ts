@@ -144,8 +144,13 @@ const LEFT_MIN_FRACTION = 0.30;
  * --right-width is always derived from it (rightFraction * splitWidth), so the
  * dock keeps the SAME show percentage whenever the main window (and therefore
  * the split) is resized. Updated by the drag gesture and seeded at init.
+ *
+ * Seeded at 0.25, the DEFAULT 25% dock: together with the view space closed,
+ * the left column (flex:3 filler) fills the other 75%. Dragging the grip or
+ * calling expandRightWorkspace() overwrites it, and the 0.30 floor in
+ * LEFT_MIN_FRACTION keeps the chat column readable while doing so.
  */
-let rightFraction = 1 / 3;
+let rightFraction = 0.25;
 
 /**
  * Measure the split container (the dock's parent, #main) width in px, falling

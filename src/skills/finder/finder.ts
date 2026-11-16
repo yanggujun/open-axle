@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { Runtime, ExecutionResponse, extractJson, getSequential, buildConnectConfig, connect, execCommand, shellQuote } from '../../common/common';
+import { Runtime, ExecutionResponse, extractJson, getSequential, buildConnectConfig, connect, execCommand, shellQuote, fenceCode } from '../../common/common';
 
 // ---------------------------------------------------------------------------
 // Safety
@@ -288,7 +288,7 @@ function findEntriesFromPayload(payload: string | Record<string, any>, runtime?:
   }
 
   const entries = matched.join('\n') + '\n';
-  return _wrapResponse(entries, data.sequential, data.prompt);
+  return _wrapResponse(fenceCode('bash', entries), data.sequential, data.prompt);
 }
 
 // ---------------------------------------------------------------------------
@@ -375,7 +375,7 @@ async function findEntriesFromPayloadRemote(
     }
 
     const entries = matched.join('\n') + '\n';
-    return _wrapResponse(entries, data.sequential, data.prompt);
+    return _wrapResponse(fenceCode('bash', entries), data.sequential, data.prompt);
   } catch (e: any) {
     return _wrapResponse(_errorContentJson(`Failed to find remote entries over SSH: ${e.message}`), data.sequential, data.prompt);
   } finally {
